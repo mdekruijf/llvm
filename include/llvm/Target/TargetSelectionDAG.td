@@ -486,6 +486,8 @@ def intrinsic_wo_chain : SDNode<"ISD::INTRINSIC_WO_CHAIN",
 // Do not use cvt directly. Use cvt forms below
 def cvt : SDNode<"ISD::CONVERT_RNDSAT", SDTConvertOp>;
 
+// Idempotence boundary
+def Idem    : SDNode<"ISD::IDEM", SDTNone, [SDNPHasChain, SDNPSideEffect]>;
 //===----------------------------------------------------------------------===//
 // Selection DAG Condition Codes
 

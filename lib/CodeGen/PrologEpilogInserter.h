@@ -24,6 +24,7 @@
 
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineIdempotentRegions.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -53,6 +54,7 @@ namespace llvm {
 
   private:
     RegScavenger *RS;
+    MachineIdempotentRegions *MIR;
 
     // MinCSFrameIndex, MaxCSFrameIndex - Keeps the range of callee saved
     // stack frame indexes.

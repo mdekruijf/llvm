@@ -125,11 +125,14 @@ collectInterferingVRegs(unsigned MaxInterferingRegs) {
     return InterferingVRegs.size();
 
   // Set up iterators on the first call.
+  const IdempotenceShadowIntervals *ISI = LiveUnion->getShadows();
   if (!CheckedFirstInterference) {
     CheckedFirstInterference = true;
 
-    // Quickly skip interference check for empty sets.
-    if (VirtReg->empty() || LiveUnion->empty()) {
+    // Quickly skip interference check for an empty interval.  Don't check
+    // return early for an empty LiveUnion since an empty LiveUnion may still
+    // have shadows.
+    if (VirtReg->empty()) {
       SeenAllInterferences = true;
       return 0;
     }
@@ -137,9 +140,43 @@ collectInterferingVRegs(unsigned MaxInterferingRegs) {
     // In most cases, the union will start before VirtReg.
     VirtRegI = VirtReg->begin();
     LiveUnionI.setMap(LiveUnion->getMap());
+    LiveUnionI.goToBegin();
+  }
+
+  // First check for shadow interference by other intervals in this union.  This
+  // is perhaps not ideal in terms of compiler performance but optimizing for
+  // performance is not the goal right now.
+  if (!CheckedShadows) {
+    if (ISI) {
+      for (; LiveUnionI.valid(); ++LiveUnionI) {
+        LiveInterval *UnionInterval = LiveUnionI.value();
+        if (!isSeenInterference(UnionInterval) &&
+            CheckedForShadows.insert(UnionInterval) &&
+            !ISI->isRegisterCoalescingSafe(*VirtReg, *UnionInterval)) {
+          InterferingVRegs.push_back(UnionInterval);
+          if (InterferingVRegs.size() >= MaxInterferingRegs)
+            return InterferingVRegs.size();
+        }
+      }
+
+      // One final check for clobbers by callee-saved register restores.  Not
+      // doing so generates incorrect code after PrologEpilogInserter runs.
+      // The special interfering interval NULL is one that can't be evicted.
+      const ShadowInterval *SI = &ISI->getShadow(*VirtReg);
+      if (SI->isClobberedByCalleeSavedRestoreOf(LiveUnion->getReg()) &&
+          !isSeenInterference(NULL)) {
+        InterferingVRegs.push_back(NULL);
+        if (InterferingVRegs.size() >= MaxInterferingRegs)
+          return InterferingVRegs.size();
+      }
+    }
+
+    // Set interval state ready to check for overlapping interference.
+    CheckedShadows = true;
     LiveUnionI.find(VirtRegI->start);
   }
 
+  // Now check for regular overlapping interference.
   LiveInterval::iterator VirtRegEnd = VirtReg->end();
   LiveInterval *RecentReg = 0;
   while (LiveUnionI.valid()) {
@@ -148,8 +185,8 @@ collectInterferingVRegs(unsigned MaxInterferingRegs) {
     // Check for overlapping interference.
     while (VirtRegI->start < LiveUnionI.stop() &&
            VirtRegI->end > LiveUnionI.start()) {
-      // This is an overlap, record the interfering register.
       LiveInterval *VReg = LiveUnionI.value();
+      // This is an overlap, record the interfering register.
       if (VReg != RecentReg && !isSeenInterference(VReg)) {
         RecentReg = VReg;
         InterferingVRegs.push_back(VReg);
@@ -179,6 +216,7 @@ collectInterferingVRegs(unsigned MaxInterferingRegs) {
     // Still not overlapping. Catch up LiveUnionI.
     LiveUnionI.advanceTo(VirtRegI->start);
   }
+
   SeenAllInterferences = true;
   return InterferingVRegs.size();
 }

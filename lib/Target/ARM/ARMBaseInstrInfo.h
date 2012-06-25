@@ -103,6 +103,11 @@ public:
   virtual unsigned isStoreToStackSlotPostFE(const MachineInstr *MI,
                                             int &FrameIndex) const;
 
+  virtual bool isIdemBoundary(const MachineInstr *MI) const;
+
+  virtual void emitIdemBoundary(MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator I) const;
+
   virtual void copyPhysReg(MachineBasicBlock &MBB,
                            MachineBasicBlock::iterator I, DebugLoc DL,
                            unsigned DestReg, unsigned SrcReg,

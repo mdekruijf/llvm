@@ -139,7 +139,7 @@ void VirtRegMap::rewrite(SlotIndexes *Indexes) {
           // A virtual register kill refers to the whole register, so we may
           // have to add <imp-use,kill> operands for the super-register.  A
           // partial redef always kills and redefines the super-register.
-          if (MO.readsReg() && (MO.isDef() || MO.isKill()))
+          if (MO.readsReg() && (MO.isDef() || MO.isKill())) 
             SuperKills.push_back(PhysReg);
 
           if (MO.isDef()) {
@@ -182,7 +182,7 @@ void VirtRegMap::rewrite(SlotIndexes *Indexes) {
       // Finally, remove any identity copies.
       if (MI->isIdentityCopy()) {
         ++NumIdCopies;
-        if (MI->getNumOperands() == 2) {
+        if (MI->getNumOperands() == 2 && !MI->getOperand(0).isDead()) {
           DEBUG(dbgs() << "Deleting identity copy.\n");
           if (Indexes)
             Indexes->removeMachineInstrFromMaps(MI);
@@ -190,6 +190,7 @@ void VirtRegMap::rewrite(SlotIndexes *Indexes) {
           MI->eraseFromParent();
         } else {
           // Transform identity copy to a KILL to deal with subregisters.
+          // Preserve KILL information for dead identity copies as well.
           MI->setDesc(TII->get(TargetOpcode::KILL));
           DEBUG(dbgs() << "Identity copy: " << *MI);
         }

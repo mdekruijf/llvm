@@ -649,6 +649,21 @@ unsigned ARMBaseInstrInfo::getInstBundleLength(const MachineInstr *MI) const {
   return Size;
 }
 
+bool ARMBaseInstrInfo::isIdemBoundary(const MachineInstr *MI) const {
+  switch (MI->getOpcode()) {
+    case ARM::IDEM:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+void ARMBaseInstrInfo::emitIdemBoundary(MachineBasicBlock &MBB,
+                                        MachineBasicBlock::iterator I) const {
+  BuildMI(MBB, I, DebugLoc(), get(ARM::IDEM));
+}
+
 void ARMBaseInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator I, DebugLoc DL,
                                    unsigned DestReg, unsigned SrcReg,

@@ -88,26 +88,30 @@ void RegAllocBase::verify() {
 
 // Instantiate a LiveIntervalUnion for each physical register.
 void RegAllocBase::LiveUnionArray::init(LiveIntervalUnion::Allocator &allocator,
+                                        IdempotenceShadowIntervals *isi,
                                         unsigned NRegs) {
   NumRegs = NRegs;
   Array =
     static_cast<LiveIntervalUnion*>(malloc(sizeof(LiveIntervalUnion)*NRegs));
   for (unsigned r = 0; r != NRegs; ++r)
-    new(Array + r) LiveIntervalUnion(r, allocator);
+    new(Array + r) LiveIntervalUnion(r, allocator, isi);
 }
 
-void RegAllocBase::init(VirtRegMap &vrm, LiveIntervals &lis) {
+void RegAllocBase::init(VirtRegMap &vrm,
+                        LiveIntervals &lis,
+                        IdempotenceShadowIntervals *isi) {
   NamedRegionTimer T("Initialize", TimerGroupName, TimePassesIsEnabled);
   TRI = &vrm.getTargetRegInfo();
   MRI = &vrm.getRegInfo();
   VRM = &vrm;
   LIS = &lis;
+  ISI = isi;
   MRI->freezeReservedRegs(vrm.getMachineFunction());
   RegClassInfo.runOnMachineFunction(vrm.getMachineFunction());
 
   const unsigned NumRegs = TRI->getNumRegs();
   if (NumRegs != PhysReg2LiveUnion.numRegs()) {
-    PhysReg2LiveUnion.init(UnionAllocator, NumRegs);
+    PhysReg2LiveUnion.init(UnionAllocator, ISI, NumRegs);
     // Cache an interferece query for each physical reg
     Queries.reset(new LiveIntervalUnion::Query[PhysReg2LiveUnion.numRegs()]);
   }

@@ -218,6 +218,9 @@ public:
                                 MachineBasicBlock *FBB,
                                 const SmallVectorImpl<MachineOperand> &Cond,
                                 DebugLoc DL) const;
+  virtual bool isIdemBoundary(const MachineInstr *MI) const;
+  virtual void emitIdemBoundary(MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator I) const;
   virtual void copyPhysReg(MachineBasicBlock &MBB,
                            MachineBasicBlock::iterator MI, DebugLoc DL,
                            unsigned DestReg, unsigned SrcReg,

@@ -19,6 +19,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/LiveStackAnalysis.h"
 #include "llvm/CodeGen/MachineDominators.h"
@@ -53,6 +54,7 @@ namespace {
 class InlineSpiller : public Spiller {
   MachineFunctionPass &Pass;
   MachineFunction &MF;
+  IdempotenceShadowIntervals *ISI;
   LiveIntervals &LIS;
   LiveStacks &LSS;
   AliasAnalysis *AA;
@@ -138,6 +140,7 @@ public:
                 VirtRegMap &vrm)
     : Pass(pass),
       MF(mf),
+      ISI(IdempotenceShadowIntervals::getAnalysisForPreservation(pass)),
       LIS(pass.getAnalysis<LiveIntervals>()),
       LSS(pass.getAnalysis<LiveStacks>()),
       AA(&pass.getAnalysis<AliasAnalysis>()),
@@ -696,6 +699,13 @@ bool InlineSpiller::hoistSpill(LiveInterval &SpillLI, MachineInstr *CopyMI) {
   // careful here.
   assert(StackInt && "No stack slot assigned yet.");
   LiveInterval &OrigLI = LIS.getInterval(Original);
+  if (ISI && !ISI->isStackSlotCoalescingSafe(*StackInt, OrigLI)) {
+    // Don't hoist if it will clobber a shadow.  Pessimistic for the reasons
+    // given in the preceding comment block.  Unfortunately, I don't understand
+    // this code well enough to optimize away the problem.
+    DEBUG(dbgs() << "Rejecting hoist for potential clobber\n");
+    return false;
+  }
   VNInfo *OrigVNI = OrigLI.getVNInfoAt(Idx);
   StackInt->MergeValueInAsValue(OrigLI, OrigVNI, StackInt->getValNumInfo(0));
   DEBUG(dbgs() << "\tmerged orig valno " << OrigVNI->id << ": "
@@ -957,7 +967,7 @@ void InlineSpiller::reMaterializeAll() {
   if (DeadDefs.empty())
     return;
   DEBUG(dbgs() << "Remat created " << DeadDefs.size() << " dead defs.\n");
-  Edit->eliminateDeadDefs(DeadDefs, LIS, VRM, TII, RegsToSpill);
+  Edit->eliminateDeadDefs(DeadDefs, LIS, ISI, VRM, TII, RegsToSpill);
 
   // Get rid of deleted and empty intervals.
   for (unsigned i = RegsToSpill.size(); i != 0; --i) {
@@ -1240,7 +1250,7 @@ void InlineSpiller::spillAll() {
   // Hoisted spills may cause dead code.
   if (!DeadDefs.empty()) {
     DEBUG(dbgs() << "Eliminating " << DeadDefs.size() << " dead defs\n");
-    Edit->eliminateDeadDefs(DeadDefs, LIS, VRM, TII, RegsToSpill);
+    Edit->eliminateDeadDefs(DeadDefs, LIS, ISI, VRM, TII, RegsToSpill);
   }
 
   // Finally delete the SnippetCopies.
@@ -1285,5 +1295,5 @@ void InlineSpiller::spill(LiveRangeEdit &edit) {
   if (!RegsToSpill.empty())
     spillAll();
 
-  Edit->calculateRegClassAndHint(MF, LIS, Loops);
+  Edit->calculateRegClassAndHint(MF, LIS, ISI, Loops);
 }

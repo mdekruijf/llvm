@@ -20,6 +20,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/LiveInterval.h"
 
 namespace llvm {
@@ -197,14 +198,18 @@ public:
   /// allocator.  These registers should not be split into new intervals
   /// as currently those new intervals are not guaranteed to spill.
   void eliminateDeadDefs(SmallVectorImpl<MachineInstr*> &Dead,
-                         LiveIntervals&, VirtRegMap&,
+                         LiveIntervals&,
+                         IdempotenceShadowIntervals*,
+                         VirtRegMap&,
                          const TargetInstrInfo&,
                          ArrayRef<unsigned> RegsBeingSpilled 
                           = ArrayRef<unsigned>());
 
   /// calculateRegClassAndHint - Recompute register class and hint for each new
   /// register.
-  void calculateRegClassAndHint(MachineFunction&, LiveIntervals&,
+  void calculateRegClassAndHint(MachineFunction&,
+                                LiveIntervals&,
+                                IdempotenceShadowIntervals *ISI,
                                 const MachineLoopInfo&);
 };
 

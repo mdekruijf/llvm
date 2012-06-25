@@ -124,6 +124,12 @@ public:
   // FIXME: Move to FrameInfok
   unsigned getSlotSize() const { return SlotSize; }
 
+  bool isProtectedRegister(unsigned Reg) const {
+    return (Reg == FramePtr ||
+            Reg == StackPtr ||
+            X86::CCRRegClass.contains(Reg));
+  }
+
   // Exception handling queries.
   unsigned getEHExceptionRegister() const;
   unsigned getEHHandlerRegister() const;

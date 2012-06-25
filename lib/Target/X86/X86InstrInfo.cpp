@@ -2404,6 +2404,21 @@ static unsigned CopyToFromAsymmetricReg(unsigned DestReg, unsigned SrcReg,
   return 0;
 }
 
+bool X86InstrInfo::isIdemBoundary(const MachineInstr *MI) const {
+  switch (MI->getOpcode()) {
+    case X86::IDEM:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+void X86InstrInfo::emitIdemBoundary(MachineBasicBlock &MBB,
+                                    MachineBasicBlock::iterator I) const {
+  BuildMI(MBB, I, DebugLoc(), get(X86::IDEM));
+}
+
 void X86InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator MI, DebugLoc DL,
                                unsigned DestReg, unsigned SrcReg,

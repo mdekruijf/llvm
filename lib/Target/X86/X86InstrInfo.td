@@ -546,7 +546,16 @@ def CallImmAddr  : Predicate<"Subtarget->IsLegalToCallImmediateAddr(TM)">;
 include "X86InstrFormats.td"
 
 //===----------------------------------------------------------------------===//
-// Pattern fragments.
+// The def of EFLAGS is to prevent the setting of status bits across region
+// boundaries.  It is not ideal since we only want to prevent this when it is
+// clobbered inside the region, but I don't know how to.
+
+// let Defs = [EFLAGS] in
+def IDEM : IdemInst<(outs), (ins), "xchg\t%r10, %r10", [(Idem)]>;
+
+//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+// Pattern fragments...
 //
 
 // X86 specific condition code. These correspond to CondCode in

@@ -28,10 +28,13 @@
 #include "llvm/PassAnalysisSupport.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/EdgeBundles.h"
+#include "llvm/CodeGen/IdempotenceOptions.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/LiveStackAnalysis.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineIdempotentRegions.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
@@ -82,6 +85,7 @@ class RAGreedy : public MachineFunctionPass,
   SlotIndexes *Indexes;
   LiveStacks *LS;
   MachineDominatorTree *DomTree;
+  MachineIdempotentRegions *MIR;
   MachineLoopInfo *Loops;
   EdgeBundles *Bundles;
   SpillPlacement *SpillPlacer;
@@ -315,6 +319,7 @@ RAGreedy::RAGreedy(): MachineFunctionPass(ID) {
   initializeLiveIntervalsPass(*PassRegistry::getPassRegistry());
   initializeSlotIndexesPass(*PassRegistry::getPassRegistry());
   initializeStrongPHIEliminationPass(*PassRegistry::getPassRegistry());
+  initializeIdempotenceShadowIntervalsPass(*PassRegistry::getPassRegistry());
   initializeRegisterCoalescerPass(*PassRegistry::getPassRegistry());
   initializeMachineSchedulerPass(*PassRegistry::getPassRegistry());
   initializeCalculateSpillWeightsPass(*PassRegistry::getPassRegistry());
@@ -338,6 +343,11 @@ void RAGreedy::getAnalysisUsage(AnalysisUsage &AU) const {
   if (StrongPHIElim)
     AU.addRequiredID(StrongPHIEliminationID);
   AU.addRequiredTransitiveID(RegisterCoalescerPassID);
+  AU.addPreserved<MachineIdempotentRegions>();
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction)
+    AU.addRequired<MachineIdempotentRegions>();
+  AU.addPreserved<IdempotenceShadowIntervals>();
+  IdempotenceShadowIntervals::requireAnalysisForPreservation(&AU);
   if (EnableMachineSched)
     AU.addRequiredID(MachineSchedulerID);
   AU.addRequired<CalculateSpillWeights>();
@@ -404,11 +414,15 @@ void RAGreedy::releaseMemory() {
 void RAGreedy::enqueue(LiveInterval *LI) {
   // Prioritize live ranges by size, assigning larger ranges first.
   // The queue holds (size, reg) pairs.
-  const unsigned Size = LI->getSize();
-  const unsigned Reg = LI->reg;
+  unsigned Size = LI->getSize();
+  unsigned Reg = LI->reg;
   assert(TargetRegisterInfo::isVirtualRegister(Reg) &&
          "Can only enqueue virtual registers");
   unsigned Prio;
+
+  // If idempotence shadows are being computed, add the shadow's size too.
+  if (ISI)
+    Size += ISI->getShadow(*LI).getSize();
 
   ExtraRegInfo.grow(Reg);
   if (ExtraRegInfo[Reg].Stage == RS_New)
@@ -450,9 +464,11 @@ unsigned RAGreedy::tryAssign(LiveInterval &VirtReg,
                              SmallVectorImpl<LiveInterval*> &NewVRegs) {
   Order.rewind();
   unsigned PhysReg;
-  while ((PhysReg = Order.next()))
+  while ((PhysReg = Order.next())) {
+    DEBUG(dbgs() << "Interference on " << PrintReg(PhysReg, TRI) << "?\n");
     if (!checkPhysRegInterference(VirtReg, PhysReg))
       break;
+  }
   if (!PhysReg || Order.isHint(PhysReg))
     return PhysReg;
 
@@ -545,6 +561,8 @@ bool RAGreedy::canEvictInterference(LiveInterval &VirtReg, unsigned PhysReg,
     // Check if any interfering live range is heavier than MaxWeight.
     for (unsigned i = Q.interferingVRegs().size(); i; --i) {
       LiveInterval *Intf = Q.interferingVRegs()[i - 1];
+      if (!Intf)
+        return false;
       if (TargetRegisterInfo::isPhysicalRegister(Intf->reg))
         return false;
       // Never evict spill products. They cannot split or spill.
@@ -1093,6 +1111,23 @@ unsigned RAGreedy::tryRegionSplit(LiveInterval &VirtReg, AllocationOrder &Order,
   float BestCost;
   SmallVector<unsigned, 8> UsedCands;
 
+  // If VirtReg is live across some idempotence boundary conservatively do not
+  // attempt the region split because it can generate clobbers. 
+  //
+  // A region split is actually unlikely to generate clobbers in the end.
+  // Unfortunately, the split generates an intermediate state that IS likely
+  // to generate clobbers. It is only that this intermediate state is
+  // typically simplified by spilling the complement interval and these
+  // clobbers disappear.  This process is very difficult to analyze for
+  // idempotence so we just uniformly disallow.
+  //
+  // Note:  For fairness in benchmarking, this code will execute even if
+  //        (IdempotencePreservationMode == IdempotenceOptions::NoPreservation)
+  if (MIR && MIR->isLiveAcrossRegions(VirtReg, *Indexes)) {
+    DEBUG(dbgs() << "Rejecting region split because of potential clobbers\n");
+    return 0;
+  }
+
   // Check if we can split this live range around a compact region.
   bool HasCompact = calcCompactRegion(GlobalCand.front());
   if (HasCompact) {
@@ -1224,6 +1259,14 @@ unsigned RAGreedy::tryRegionSplit(LiveInterval &VirtReg, AllocationOrder &Order,
 unsigned RAGreedy::tryBlockSplit(LiveInterval &VirtReg, AllocationOrder &Order,
                                  SmallVectorImpl<LiveInterval*> &NewVRegs) {
   assert(&SA->getParent() == &VirtReg && "Live range wasn't analyzed");
+
+  // If VirtReg is live across some idempotence boundary do not attempt the
+  // block split.  See similar code and comment in tryRegionSplit.
+  if (MIR && MIR->isLiveAcrossRegions(VirtReg, *Indexes)) {
+    DEBUG(dbgs() << "Rejecting block split because of potential clobbers\n");
+    return 0;
+  }
+
   unsigned Reg = VirtReg.reg;
   bool SingleInstrs = RegClassInfo.isProperSubClass(MRI->getRegClass(Reg));
   LiveRangeEdit LREdit(VirtReg, NewVRegs, this);
@@ -1620,7 +1663,11 @@ bool RAGreedy::runOnMachineFunction(MachineFunction &mf) {
   if (VerifyEnabled)
     MF->verify(this, "Before greedy register allocator");
 
-  RegAllocBase::init(getAnalysis<VirtRegMap>(), getAnalysis<LiveIntervals>());
+  RegAllocBase::init(
+    getAnalysis<VirtRegMap>(),
+    getAnalysis<LiveIntervals>(),
+    IdempotenceShadowIntervals::getAnalysisForPreservation(*this));
+
   Indexes = &getAnalysis<SlotIndexes>();
   DomTree = &getAnalysis<MachineDominatorTree>();
   SpillerInstance.reset(createInlineSpiller(*this, *MF, *VRM));
@@ -1628,9 +1675,10 @@ bool RAGreedy::runOnMachineFunction(MachineFunction &mf) {
   Bundles = &getAnalysis<EdgeBundles>();
   SpillPlacer = &getAnalysis<SpillPlacement>();
   DebugVars = &getAnalysis<LiveDebugVariables>();
+  MIR = getAnalysisIfAvailable<MachineIdempotentRegions>();
 
-  SA.reset(new SplitAnalysis(*VRM, *LIS, *Loops));
-  SE.reset(new SplitEditor(*SA, *LIS, *VRM, *DomTree));
+  SA.reset(new SplitAnalysis(*VRM, *LIS, ISI, *Loops));
+  SE.reset(new SplitEditor(*SA, *LIS, ISI, *VRM, *DomTree));
   ExtraRegInfo.clear();
   ExtraRegInfo.resize(MRI->getNumVirtRegs());
   NextCascade = 1;
@@ -1640,6 +1688,10 @@ bool RAGreedy::runOnMachineFunction(MachineFunction &mf) {
   allocatePhysRegs();
   addMBBLiveIns(MF);
   LIS->addKillFlags();
+
+  // Now that we have allocated registers and updated the kill flags, we are
+  // in the PostRA state.
+  MRI->setPostRA();
 
   // Run rewriter
   {

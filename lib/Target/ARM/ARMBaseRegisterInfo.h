@@ -99,6 +99,8 @@ public:
 
   BitVector getReservedRegs(const MachineFunction &MF) const;
 
+  bool isProtectedRegister(unsigned Reg) const;
+
   /// canCombineSubRegIndices - Given a register class and a list of
   /// subregister indices, return true if it's possible to combine the
   /// subregister indices into one that corresponds to a larger

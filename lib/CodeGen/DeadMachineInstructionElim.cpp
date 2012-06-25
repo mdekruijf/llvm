@@ -82,6 +82,26 @@ bool DeadMachineInstructionElim::isDead(const MachineInstr *MI) const {
   return true;
 }
 
+static bool isLiveInCopy(MachineBasicBlock::const_iterator I,
+                         const MachineRegisterInfo &MRI) {
+  const MachineBasicBlock *MBB = I->getParent();
+  for (MachineBasicBlock::const_reverse_iterator RI(next(I)), RE = MBB->rend();
+       RI != RE; ++RI) {
+    const MachineInstr *MI = &*RI;
+    if (MBB->isLandingPad() && (MI->isEHLabel() || MI->isPHI()))
+        continue;
+
+    if (!MI->isCopy())
+      return false;
+
+    unsigned CopySrcReg = MI->getOperand(1).getReg();
+    if (!TargetRegisterInfo::isPhysicalRegister(CopySrcReg) ||
+        !MBB->isLiveIn(CopySrcReg))
+      return false;
+  }
+  return true;
+}
+
 bool DeadMachineInstructionElim::runOnMachineFunction(MachineFunction &MF) {
   bool AnyChanges = false;
   MRI = &MF.getRegInfo();
@@ -127,6 +147,11 @@ bool DeadMachineInstructionElim::runOnMachineFunction(MachineFunction &MF) {
 
       // If the instruction is dead, delete it!
       if (isDead(MI)) {
+        // Copies of basic block live-ins that are dead need to go so
+        // idempotence verification doesn't pull false negatives.
+        if (isLiveInCopy(MI, *MRI))
+          MBB->removeLiveIn(MI->getOperand(1).getReg());
+
         DEBUG(dbgs() << "DeadMachineInstructionElim: DELETING: " << *MI);
         // It is possible that some DBG_VALUE instructions refer to this
         // instruction.  Examine each def operand for such references;

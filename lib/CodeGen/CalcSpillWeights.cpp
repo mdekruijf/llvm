@@ -35,6 +35,8 @@ INITIALIZE_PASS_END(CalculateSpillWeights, "calcspillweights",
 void CalculateSpillWeights::getAnalysisUsage(AnalysisUsage &au) const {
   au.addRequired<LiveIntervals>();
   au.addRequired<MachineLoopInfo>();
+  au.addPreserved<IdempotenceShadowIntervals>();
+  IdempotenceShadowIntervals::requireAnalysisForPreservation(&au);
   au.setPreservesAll();
   MachineFunctionPass::getAnalysisUsage(au);
 }
@@ -46,7 +48,9 @@ bool CalculateSpillWeights::runOnMachineFunction(MachineFunction &fn) {
                << fn.getFunction()->getName() << '\n');
 
   LiveIntervals &lis = getAnalysis<LiveIntervals>();
-  VirtRegAuxInfo vrai(fn, lis, getAnalysis<MachineLoopInfo>());
+  VirtRegAuxInfo vrai(fn, lis,
+                      getAnalysisIfAvailable<IdempotenceShadowIntervals>(),
+                      getAnalysis<MachineLoopInfo>());
   for (LiveIntervals::iterator I = lis.begin(), E = lis.end(); I != E; ++I) {
     LiveInterval &li = *I->second;
     if (TargetRegisterInfo::isVirtualRegister(li.reg))
@@ -183,5 +187,8 @@ void VirtRegAuxInfo::CalculateWeightAndHint(LiveInterval &li) {
       totalWeight *= 0.5F;
   }
 
-  li.weight = normalizeSpillWeight(totalWeight, li.getSize());
+  unsigned interval_size = li.getSize();
+  if (ISI)
+    interval_size += ISI->getShadow(li).getSize();
+  li.weight = normalizeSpillWeight(totalWeight, interval_size);
 }

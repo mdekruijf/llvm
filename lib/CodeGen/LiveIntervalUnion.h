@@ -19,6 +19,7 @@
 
 #include "llvm/ADT/IntervalMap.h"
 #include "llvm/CodeGen/LiveInterval.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 
 namespace llvm {
 
@@ -64,9 +65,12 @@ private:
   unsigned Tag;           // unique tag for current contents.
   LiveSegments Segments;  // union of virtual reg segments
 
+  // Analyses.
+  const IdempotenceShadowIntervals *ISI;
+
 public:
-  LiveIntervalUnion(unsigned r, Allocator &a) : RepReg(r), Tag(0), Segments(a)
-    {}
+  LiveIntervalUnion(unsigned r, Allocator &a, IdempotenceShadowIntervals *isi)
+    : RepReg(r), Tag(0), Segments(a), ISI(isi) {}
 
   // Iterate over all segments in the union of live virtual registers ordered
   // by their starting position.
@@ -79,6 +83,9 @@ public:
   // Provide public access to the underlying map to allow overlap iteration.
   typedef LiveSegments Map;
   const Map &getMap() { return Segments; }
+
+  const IdempotenceShadowIntervals *getShadows() { return ISI; }
+  unsigned getReg() { return RepReg; }
 
   /// getTag - Return an opaque tag representing the current state of the union.
   unsigned getTag() const { return Tag; }
@@ -110,8 +117,10 @@ public:
     LiveInterval *VirtReg;
     LiveInterval::iterator VirtRegI; // current position in VirtReg
     SegmentIter LiveUnionI;          // current position in LiveUnion
+    SmallPtrSet<LiveInterval*,4> CheckedForShadows;
     SmallVector<LiveInterval*,4> InterferingVRegs;
     bool CheckedFirstInterference;
+    bool CheckedShadows;
     bool SeenAllInterferences;
     bool SeenUnspillableVReg;
     unsigned Tag, UserTag;
@@ -121,14 +130,17 @@ public:
 
     Query(LiveInterval *VReg, LiveIntervalUnion *LIU):
       LiveUnion(LIU), VirtReg(VReg), CheckedFirstInterference(false),
-      SeenAllInterferences(false), SeenUnspillableVReg(false)
+      CheckedShadows(false), SeenAllInterferences(false),
+      SeenUnspillableVReg(false)
     {}
 
     void clear() {
       LiveUnion = NULL;
       VirtReg = NULL;
+      CheckedForShadows.clear();
       InterferingVRegs.clear();
       CheckedFirstInterference = false;
+      CheckedShadows = false;
       SeenAllInterferences = false;
       SeenUnspillableVReg = false;
       Tag = 0;

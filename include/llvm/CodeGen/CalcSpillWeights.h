@@ -11,6 +11,7 @@
 #ifndef LLVM_CODEGEN_CALCSPILLWEIGHTS_H
 #define LLVM_CODEGEN_CALCSPILLWEIGHTS_H
 
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/ADT/DenseMap.h"
 
@@ -42,12 +43,14 @@ namespace llvm {
   class VirtRegAuxInfo {
     MachineFunction &MF;
     LiveIntervals &LIS;
+    IdempotenceShadowIntervals *ISI;
     const MachineLoopInfo &Loops;
     DenseMap<unsigned, float> Hint;
   public:
     VirtRegAuxInfo(MachineFunction &mf, LiveIntervals &lis,
+                   IdempotenceShadowIntervals *isi,
                    const MachineLoopInfo &loops) :
-      MF(mf), LIS(lis), Loops(loops) {}
+      MF(mf), LIS(lis), ISI(isi), Loops(loops) {}
 
     /// CalculateWeightAndHint - (re)compute li's spill weight and allocation
     /// hint.

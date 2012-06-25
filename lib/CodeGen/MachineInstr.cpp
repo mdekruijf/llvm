@@ -1690,8 +1690,13 @@ bool MachineInstr::addRegisterKilled(unsigned IncomingReg,
     unsigned OpIdx = DeadOps.back();
     if (getOperand(OpIdx).isImplicit())
       RemoveOperand(OpIdx);
+    // FIXME: What is the purpose of this?  In any case, it messes up
+    // idempotence verification -- we need all defs, sub-reg or super-reg, to be
+    // equally killed.
+#if 0
     else
-      getOperand(OpIdx).setIsKill(false);
+      getOperand(OpIdx).setIsKill(true);
+#endif
     DeadOps.pop_back();
   }
 
@@ -1756,8 +1761,11 @@ bool MachineInstr::addRegisterDead(unsigned IncomingReg,
     unsigned OpIdx = DeadOps.back();
     if (getOperand(OpIdx).isImplicit())
       RemoveOperand(OpIdx);
+    // FIXME: Same issue as for addRegisterKilled()
+#if 0
     else
       getOperand(OpIdx).setIsDead(false);
+#endif
     DeadOps.pop_back();
   }
 

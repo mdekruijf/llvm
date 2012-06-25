@@ -18,6 +18,7 @@
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "llvm/Function.h"
+#include "llvm/CodeGen/IdempotenceOptions.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -28,6 +29,7 @@
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/ADT/SmallSet.h"
 
 using namespace llvm;
@@ -153,11 +155,13 @@ void emitSPUpdate(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
 
   while (Offset) {
     uint64_t ThisVal = (Offset > Chunk) ? Chunk : Offset;
-    if (ThisVal == (Is64Bit ? 8 : 4)) {
+    if (ThisVal == (Is64Bit ? 8 : 4) &&
+        IdempotenceConstructionMode == IdempotenceOptions::NoConstruction) {
       // Use push / pop instead.
       unsigned Reg = isSub
         ? (unsigned)(Is64Bit ? X86::RAX : X86::EAX)
         : findDeadCallerSavedReg(MBB, MBBI, TRI, Is64Bit);
+
       if (Reg) {
         Opc = isSub
           ? (Is64Bit ? X86::PUSH64r : X86::PUSH32r)

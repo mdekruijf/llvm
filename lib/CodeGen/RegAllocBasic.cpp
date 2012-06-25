@@ -23,6 +23,7 @@
 #include "llvm/Function.h"
 #include "llvm/PassAnalysisSupport.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/LiveStackAnalysis.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -293,7 +294,9 @@ bool RABasic::runOnMachineFunction(MachineFunction &mf) {
   MF = &mf;
   DEBUG(RMF = &getAnalysis<RenderMachineFunction>());
 
-  RegAllocBase::init(getAnalysis<VirtRegMap>(), getAnalysis<LiveIntervals>());
+  RegAllocBase::init(getAnalysis<VirtRegMap>(),
+                     getAnalysis<LiveIntervals>(),
+                     getAnalysisIfAvailable<IdempotenceShadowIntervals>());
   SpillerInstance.reset(createInlineSpiller(*this, *MF, *VRM));
 
   allocatePhysRegs();

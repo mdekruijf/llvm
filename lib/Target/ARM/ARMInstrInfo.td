@@ -926,6 +926,10 @@ def coproc_option_imm : Operand<i32> {
 include "ARMInstrFormats.td"
 
 //===----------------------------------------------------------------------===//
+//
+def IDEM : IdemInst<"orreq\tr0, r0, r0", [(Idem)]>;
+
+//===----------------------------------------------------------------------===//
 // Multiclass helpers...
 //
 

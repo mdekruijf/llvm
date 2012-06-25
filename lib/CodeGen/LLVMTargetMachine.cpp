@@ -17,6 +17,7 @@
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/Assembly/PrintModulePass.h"
 #include "llvm/CodeGen/AsmPrinter.h"
+#include "llvm/CodeGen/IdempotenceOptions.h"
 #include "llvm/CodeGen/MachineFunctionAnalysis.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/GCStrategy.h"
@@ -283,6 +284,16 @@ void LLVMTargetMachine::printAndVerify(PassManagerBase &PM,
     PM.add(createMachineVerifierPass(Banner));
 }
 
+void LLVMTargetMachine::printAndVerifyIdem(PassManagerBase &PM,
+                                           const char *Banner) const {
+
+  if (Options.PrintMachineCode)
+    PM.add(createMachineFunctionPrinterPass(dbgs(), Banner));
+
+  if (VerifyMachineCode || IdempotenceVerify)
+    PM.add(createMachineVerifierPass(Banner));
+}
+
 /// addCommonCodeGenPasses - Add standard LLVM codegen passes used for both
 /// emitting to assembly files or machine code output.
 ///
@@ -302,6 +313,11 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   // coming from the front-end and/or optimizer is valid.
   if (!DisableVerify)
     PM.add(createVerifierPass());
+
+  // Run idempotent region construction before loop strength reduction or
+  // alias analysis becomes unreliable.
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction)
+    PM.add(createConstructIdempotentRegionsPass());
 
   // Run loop strength reduction before anything else.
   if (getOptLevel() != CodeGenOpt::None && !DisableLSR) {
@@ -426,9 +442,15 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   if (addPreRegAlloc(PM))
     printAndVerify(PM, "After PreRegAlloc passes");
 
+  // Patch idempotent regions before register allocation.
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction) {
+    PM.add(createPatchMachineIdempotentRegionsPass());
+    printAndVerifyIdem(PM, "After patching idempotent regions");
+  }
+
   // Perform register allocation.
   PM.add(createRegisterAllocator(getOptLevel()));
-  printAndVerify(PM, "After Register Allocation");
+  printAndVerifyIdem(PM, "After Register Allocation");
 
   // Perform stack slot coloring and post-ra machine LICM.
   if (getOptLevel() != CodeGenOpt::None) {
@@ -441,16 +463,16 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
     if (!DisablePostRAMachineLICM)
       PM.add(createMachineLICMPass(false));
 
-    printAndVerify(PM, "After StackSlotColoring and postra Machine LICM");
+    printAndVerifyIdem(PM, "After StackSlotColoring and postra Machine LICM");
   }
 
   // Run post-ra passes.
   if (addPostRegAlloc(PM))
-    printAndVerify(PM, "After PostRegAlloc passes");
+    printAndVerifyIdem(PM, "After PostRegAlloc passes");
 
   // Insert prolog/epilog code.  Eliminate abstract frame index references...
   PM.add(createPrologEpilogCodeInserter());
-  printAndVerify(PM, "After PrologEpilogCodeInserter");
+  printAndVerifyIdem(PM, "After PrologEpilogCodeInserter");
 
   // Branch folding must be run after regalloc and prolog/epilog insertion.
   if (getOptLevel() != CodeGenOpt::None && !DisableBranchFold) {

@@ -193,6 +193,13 @@ class PseudoI<dag oops, dag iops, list<dag> pattern>
   let Pattern = pattern;
 }
 
+class IdemInst<dag oops, dag iops, string asm, list<dag> pattern>
+  : X86Inst<0, Pseudo, NoImm, oops, iops, asm, GenericDomain> {
+  let Pattern = pattern;
+  let FPForm = SpecialFP;
+  let CodeSize = 3;
+}
+
 class I<bits<8> o, Format f, dag outs, dag ins, string asm,
         list<dag> pattern, Domain d = GenericDomain>
   : X86Inst<o, f, NoImm, outs, ins, asm, d> {

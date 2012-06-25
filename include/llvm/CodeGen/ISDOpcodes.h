@@ -476,6 +476,10 @@ namespace ISD {
     // pointer type.
     BRIND,
 
+    // IDEM - Idempotent region boundary instructions.  First operand is the
+    // chain and return value is chain.
+    IDEM,
+
     // BR_JT - Jumptable branch. The first operand is the chain, the second
     // is the jumptable index, the last one is the jumptable entry index.
     BR_JT,

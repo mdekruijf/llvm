@@ -31,6 +31,9 @@ class MachineRegisterInfo {
   /// registers have a single def.
   bool IsSSA;
 
+  bool IsPostRA;
+  bool IsPatched;
+
   /// VRegInfo - Information we keep for each virtual register.
   ///
   /// Each element in this list contains the register class of the vreg and the
@@ -96,6 +99,14 @@ public:
 
   // leaveSSA - Indicates that the machine function is no longer in SSA form.
   void leaveSSA() { IsSSA = false; }
+
+  // Register allocator has run.
+  bool isPostRA() const { return IsPostRA; }
+  void setPostRA() { IsPostRA = true; }
+
+  // PatchMachineIdempotentRegions has run.
+  bool isPatched() const { return IsPatched; }
+  void setPatched() { IsPatched = true; }
 
   //===--------------------------------------------------------------------===//
   // Register Info

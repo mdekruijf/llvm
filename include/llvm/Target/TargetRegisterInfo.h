@@ -506,6 +506,15 @@ public:
     return RC;
   }
 
+  // isProtectedRegister - Returns whether the register can safely be assumed to
+  // be implicitly saved before re-execution and restored upon re-execution for
+  // otherwise idempotent code.  This is arguably a cheat, but some registers
+  // are just too unwieldy, cryptic, or idiosyncratic to analyze correct for all
+  // cases.
+  virtual bool isProtectedRegister(unsigned Reg) const {
+    return false;
+  }
+
   /// getLargestLegalSuperClass - Returns the largest super class of RC that is
   /// legal to use in the current sub-target and has the same spill size.
   /// The returned register class can be used to create virtual registers which

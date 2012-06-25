@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveVariables.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineIdempotentRegions.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
@@ -81,6 +82,7 @@ void LiveIntervals::getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequiredID(PHIEliminationID);
   }
 
+  AU.addPreserved<MachineIdempotentRegions>();
   AU.addRequiredID(TwoAddressInstructionPassID);
   AU.addPreserved<ProcessImplicitDefs>();
   AU.addRequired<ProcessImplicitDefs>();

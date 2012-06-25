@@ -342,6 +342,14 @@ class PseudoInst<dag oops, dag iops, InstrItinClass itin, list<dag> pattern>
   let isPseudo = 1;
 }
 
+class IdemInst<string asm, list<dag> pattern>
+  : InstARM<AddrMode1, 4, IndexModeNone, DPFrm, GenericDomain, "", NoItinerary> {
+  let OutOperandList = (outs);
+  let InOperandList = (ins);
+  let Pattern = pattern;
+  let AsmString = asm;
+}
+
 // PseudoInst that's ARM-mode only.
 class ARMPseudoInst<dag oops, dag iops, int sz, InstrItinClass itin,
                     list<dag> pattern>

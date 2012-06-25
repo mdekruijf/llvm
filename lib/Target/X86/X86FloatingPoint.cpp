@@ -1644,6 +1644,32 @@ void FPS::handleSpecialFP(MachineBasicBlock::iterator &I) {
     return;
   }
 
+  case X86::IDEM:
+    // Free FP regs that this idempotence boundary kills
+
+    // TODO: OBSOLETE!
+    assert(StackTop == 0 && "x87 FP is broken; use x86-64 w/o 80-bit FP if you can");
+
+    // The code below is for the pre-shadows idempotence implementation where
+    // idempotence boundaries held implicit uses of registers.  This needs to
+    // be scratched and rewritten to use shadow information.  Seems like a
+    // large undertaking.  Fortunately, x87 is only heavily used for 32-bit x86.
+    // Unfortunately, it is still used for 80-bit FP even on x86-64.
+    for (MachineInstr::mop_iterator mop = MI->operands_begin();
+         mop != MI->operands_end(); ++mop) {
+      MachineOperand &mo = *mop;
+      assert(mo.isReg() && mo.isImplicit());
+
+      unsigned reg = mo.getReg();
+      if (!mo.isKill() || reg < X86::FP0 || reg > X86::FP6)
+        continue;
+
+      unsigned fp_reg = reg - X86::FP0;
+      DEBUG(dbgs() << "Killing %FP" << fp_reg << "\n");
+      freeStackSlotBefore(MI, fp_reg);
+    }
+    return;
+
   case X86::RET:
   case X86::RETI:
     // If RET has an FP register use operand, pass the first one in ST(0) and

@@ -16,9 +16,12 @@
 #include "llvm/Function.h"
 #include "llvm/Module.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/IdempotenceOptions.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/LiveStackAnalysis.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineIdempotentRegions.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
@@ -48,6 +51,7 @@ STATISTIC(NumDead,       "Number of trivially dead stack accesses eliminated");
 namespace {
   class StackSlotColoring : public MachineFunctionPass {
     bool ColorWithRegs;
+    IdempotenceShadowIntervals* ISI;
     LiveStacks* LS;
     MachineFrameInfo *MFI;
     const TargetInstrInfo  *TII;
@@ -98,6 +102,9 @@ namespace {
       AU.addRequired<LiveStacks>();
       AU.addRequired<VirtRegMap>();
       AU.addPreserved<VirtRegMap>();      
+      AU.addPreserved<MachineIdempotentRegions>();
+      AU.addPreserved<IdempotenceShadowIntervals>();
+      IdempotenceShadowIntervals::requireAnalysisForPreservation(&AU);
       AU.addRequired<MachineLoopInfo>();
       AU.addPreserved<MachineLoopInfo>();
       AU.addPreservedID(MachineDominatorsID);
@@ -126,6 +133,7 @@ char StackSlotColoring::ID = 0;
 INITIALIZE_PASS_BEGIN(StackSlotColoring, "stack-slot-coloring",
                 "Stack Slot Coloring", false, false)
 INITIALIZE_PASS_DEPENDENCY(SlotIndexes)
+INITIALIZE_PASS_DEPENDENCY(IdempotenceShadowIntervals)
 INITIALIZE_PASS_DEPENDENCY(LiveStacks)
 INITIALIZE_PASS_DEPENDENCY(VirtRegMap)
 INITIALIZE_PASS_DEPENDENCY(MachineLoopInfo)
@@ -216,7 +224,8 @@ StackSlotColoring::OverlapWithAssignments(LiveInterval *li, int Color) const {
   const SmallVector<LiveInterval*,4> &OtherLIs = Assignments[Color];
   for (unsigned i = 0, e = OtherLIs.size(); i != e; ++i) {
     LiveInterval *OtherLI = OtherLIs[i];
-    if (OtherLI->overlaps(*li))
+    if (OtherLI->overlaps(*li) ||
+        (ISI && !ISI->isStackSlotCoalescingSafe(*li, *OtherLI)))
       return true;
   }
   return false;
@@ -414,6 +423,7 @@ bool StackSlotColoring::runOnMachineFunction(MachineFunction &MF) {
   TII = MF.getTarget().getInstrInfo();
   LS = &getAnalysis<LiveStacks>();
   loopInfo = &getAnalysis<MachineLoopInfo>();
+  ISI = IdempotenceShadowIntervals::getAnalysisForPreservation(*this);
 
   bool Changed = false;
 

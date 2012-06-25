@@ -262,6 +262,13 @@ ARMBaseRegisterInfo::getPointerRegClass(unsigned Kind) const {
   return ARM::GPRRegisterClass;
 }
 
+bool ARMBaseRegisterInfo::isProtectedRegister(unsigned Reg) const {
+  return (Reg == ARM::SP ||
+          Reg == FramePtr ||
+          ARM::CCRRegisterClass->contains(Reg) ||
+          Reg == ARM::FPSCR);
+}
+
 const TargetRegisterClass *
 ARMBaseRegisterInfo::getCrossCopyRegClass(const TargetRegisterClass *RC) const {
   if (RC == &ARM::CCRRegClass)

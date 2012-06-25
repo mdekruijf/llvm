@@ -72,7 +72,9 @@ class RegAllocBase {
 
     unsigned numRegs() const { return NumRegs; }
 
-    void init(LiveIntervalUnion::Allocator &, unsigned NRegs);
+    void init(LiveIntervalUnion::Allocator &, 
+              IdempotenceShadowIntervals *,
+              unsigned NRegs);
 
     void clear();
 
@@ -92,6 +94,7 @@ protected:
   const TargetRegisterInfo *TRI;
   MachineRegisterInfo *MRI;
   VirtRegMap *VRM;
+  IdempotenceShadowIntervals *ISI;
   LiveIntervals *LIS;
   RegisterClassInfo RegClassInfo;
 
@@ -100,7 +103,8 @@ protected:
   virtual ~RegAllocBase() {}
 
   // A RegAlloc pass should call this before allocatePhysRegs.
-  void init(VirtRegMap &vrm, LiveIntervals &lis);
+  void init(VirtRegMap &vrm, LiveIntervals &lis,
+            IdempotenceShadowIntervals *isi);
 
   // Get an initialized query to check interferences between lvr and preg.  Note
   // that Query::init must be called at least once for each physical register

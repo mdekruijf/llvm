@@ -292,6 +292,9 @@ protected: // Can only create subclasses.
   ///
   void printAndVerify(PassManagerBase &PM, const char *Banner) const;
 
+  /// printAndVerifyIdem - Include idempotence verification.
+  void printAndVerifyIdem(PassManagerBase &PM, const char *Banner) const;
+
 private:
   /// addCommonCodeGenPasses - Add standard LLVM codegen passes used for
   /// both emitting to assembly files or machine code output.
@@ -329,6 +332,12 @@ public:
                                  bool DisableVerify = true);
 
   /// Target-Independent Code Generator Pass Configuration Options.
+
+  /// addIdemAnalysis - This method may be implemented by targets that support
+  /// and want to utilize idempotence analysis
+  virtual bool addIdemAnalysis(PassManagerBase &) {
+    return false;
+  }
 
   /// addPreISelPasses - This method should add any "last minute" LLVM->LLVM
   /// passes (which are run just before instruction selector).

@@ -96,6 +96,19 @@ namespace llvm {
   /// machine basic blocks.
   extern char &UnreachableMachineBlockElimID;
 
+  /// ConstructIdempotentRegions pass.
+  FunctionPass *createConstructIdempotentRegionsPass();
+
+  /// MachineIdempotentRegions pass.
+  FunctionPass *createMachineIdempotentRegionsPass();
+
+  /// PatchMachineIdempotentRegions pass.
+  FunctionPass *createPatchMachineIdempotentRegionsPass();
+  extern char &PatchMachineIdempotentRegionsID;
+
+  /// DivideMachineIdempotentRegions pass.
+  extern char &DivideMachineIdempotentRegionsID;
+
   /// DeadMachineInstructionElim pass - This pass removes dead machine
   /// instructions.
   ///

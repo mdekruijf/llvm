@@ -369,6 +369,18 @@ public:
     return false;
   }
 
+  /// isIdemBoundary - Is this an idempotence boundary instruction?
+  virtual bool isIdemBoundary(const MachineInstr *MI) const {
+    assert(0 && "Target didn't implement TargetInstrInfo::isIdemBoundary!");
+    return false;
+  }
+
+  /// emitIdemBoundary - Emit an idempotence boundary instruction.
+  virtual void emitIdemBoundary(MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator MI) const {
+    assert(0 && "Target didn't implement TargetInstrInfo::emitIdemBoundary!");
+  }
+
   /// copyPhysReg - Emit instructions to copy a pair of physical registers.
   virtual void copyPhysReg(MachineBasicBlock &MBB,
                            MachineBasicBlock::iterator MI, DebugLoc DL,

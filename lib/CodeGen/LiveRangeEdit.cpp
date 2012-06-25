@@ -211,7 +211,9 @@ bool LiveRangeEdit::foldAsLoad(LiveInterval *LI,
 }
 
 void LiveRangeEdit::eliminateDeadDefs(SmallVectorImpl<MachineInstr*> &Dead,
-                                      LiveIntervals &LIS, VirtRegMap &VRM,
+                                      LiveIntervals &LIS,
+                                      IdempotenceShadowIntervals *ISI,
+                                      VirtRegMap &VRM,
                                       const TargetInstrInfo &TII,
                                       ArrayRef<unsigned> RegsBeingSpilled) {
   SetVector<LiveInterval*,
@@ -291,7 +293,11 @@ void LiveRangeEdit::eliminateDeadDefs(SmallVectorImpl<MachineInstr*> &Dead,
       continue;
     if (delegate_)
       delegate_->LRE_WillShrinkVirtReg(LI->reg);
-    if (!LIS.shrinkToUses(LI, &Dead))
+
+    bool CanSeparate = LIS.shrinkToUses(LI, &Dead);
+    if (ISI)
+      ISI->recomputeShadow(*LI);
+    if (!CanSeparate)
       continue;
     
     // Don't create new intervals for a register being spilled.
@@ -335,8 +341,9 @@ void LiveRangeEdit::eliminateDeadDefs(SmallVectorImpl<MachineInstr*> &Dead,
 
 void LiveRangeEdit::calculateRegClassAndHint(MachineFunction &MF,
                                              LiveIntervals &LIS,
+                                             IdempotenceShadowIntervals *ISI,
                                              const MachineLoopInfo &Loops) {
-  VirtRegAuxInfo VRAI(MF, LIS, Loops);
+  VirtRegAuxInfo VRAI(MF, LIS, ISI, Loops);
   MachineRegisterInfo &MRI = MF.getRegInfo();
   for (iterator I = begin(), E = end(); I != E; ++I) {
     LiveInterval &LI = **I;

@@ -293,11 +293,15 @@ void PHIElimination::LowerAtomicPHINode(
 
     // If source is defined by an implicit def, there is no need to insert a
     // copy.
+    // FIXME: No. Put it there. Otherwise I cannot know the value is undefined
+    // and that a clobber is allowed when verifying idempotence.
+#if 0
     MachineInstr *DefMI = MRI->getVRegDef(SrcReg);
     if (DefMI->isImplicitDef()) {
       ImpDefs.insert(DefMI);
       continue;
     }
+#endif
 
     // Check to make sure we haven't already emitted the copy for this block.
     // This can happen because PHI nodes may have multiple entries for the same

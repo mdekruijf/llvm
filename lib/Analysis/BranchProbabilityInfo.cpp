@@ -481,9 +481,12 @@ getEdgeWeight(const BasicBlock *Src, const BasicBlock *Dst) const {
 void BranchProbabilityInfo::
 setEdgeWeight(const BasicBlock *Src, const BasicBlock *Dst, uint32_t Weight) {
   Weights[std::make_pair(Src, Dst)] = Weight;
+  // TODO: LLVM HEAD broken; fails on assertion for SPEC 2006 perlbench.
+#if 0
   DEBUG(dbgs() << "set edge " << Src->getName() << " -> "
                << Dst->getName() << " weight to " << Weight
                << (isEdgeHot(Src, Dst) ? " [is HOT now]\n" : "\n"));
+#endif
 }
 
 

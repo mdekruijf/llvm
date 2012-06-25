@@ -4480,6 +4480,11 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     // By default, turn this into a target intrinsic node.
     visitTargetIntrinsic(I, Intrinsic);
     return 0;
+
+  case Intrinsic::idem: 
+    DAG.setRoot(DAG.getNode(ISD::IDEM, dl, MVT::Other, getRoot()));
+    return 0;
+
   case Intrinsic::vastart:  visitVAStart(I); return 0;
   case Intrinsic::vaend:    visitVAEnd(I); return 0;
   case Intrinsic::vacopy:   visitVACopy(I); return 0;

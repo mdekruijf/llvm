@@ -41,10 +41,12 @@ STATISTIC(NumRepairs,  "Number of invalid live ranges repaired");
 
 SplitAnalysis::SplitAnalysis(const VirtRegMap &vrm,
                              const LiveIntervals &lis,
+                             const IdempotenceShadowIntervals *isi,
                              const MachineLoopInfo &mli)
   : MF(vrm.getMachineFunction()),
     VRM(vrm),
     LIS(lis),
+    ISI(isi),
     Loops(mli),
     TII(*MF.getTarget().getInstrInfo()),
     CurLI(0),
@@ -129,7 +131,7 @@ void SplitAnalysis::analyzeUses() {
     if (!(*I)->isPHIDef() && !(*I)->isUnused())
       UseSlots.push_back((*I)->def);
 
-  // Get use slots form the use-def chain.
+  // Get use slots from the use-def chain.
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   for (MachineRegisterInfo::use_nodbg_iterator
        I = MRI.use_nodbg_begin(CurLI->reg), E = MRI.use_nodbg_end(); I != E;
@@ -154,6 +156,8 @@ void SplitAnalysis::analyzeUses() {
     DEBUG(dbgs() << "*** Fixing inconsistent live interval! ***\n");
     const_cast<LiveIntervals&>(LIS)
       .shrinkToUses(const_cast<LiveInterval*>(CurLI));
+    if (ISI)
+      const_cast<IdempotenceShadowIntervals*>(ISI)->recomputeShadow(*CurLI);
     UseBlocks.clear();
     ThroughBlocks.clear();
     bool fixed = calcLiveBlockInfo();
@@ -324,9 +328,10 @@ void SplitAnalysis::analyze(const LiveInterval *li) {
 /// Create a new SplitEditor for editing the LiveInterval analyzed by SA.
 SplitEditor::SplitEditor(SplitAnalysis &sa,
                          LiveIntervals &lis,
+                         IdempotenceShadowIntervals *isi,
                          VirtRegMap &vrm,
                          MachineDominatorTree &mdt)
-  : SA(sa), LIS(lis), VRM(vrm),
+  : SA(sa), LIS(lis), ISI(isi), VRM(vrm),
     MRI(vrm.getMachineFunction().getRegInfo()),
     MDT(mdt),
     TII(*vrm.getMachineFunction().getTarget().getInstrInfo()),
@@ -1035,7 +1040,7 @@ void SplitEditor::deleteRematVictims() {
   if (Dead.empty())
     return;
 
-  Edit->eliminateDeadDefs(Dead, LIS, VRM, TII);
+  Edit->eliminateDeadDefs(Dead, LIS, ISI, VRM, TII);
 }
 
 void SplitEditor::finish(SmallVectorImpl<unsigned> *LRMap) {
@@ -1050,6 +1055,7 @@ void SplitEditor::finish(SmallVectorImpl<unsigned> *LRMap) {
     const VNInfo *ParentVNI = *I;
     if (ParentVNI->isUnused())
       continue;
+
     unsigned RegIdx = RegAssign.lookup(ParentVNI->def);
     VNInfo *VNI = defValue(RegIdx, ParentVNI, ParentVNI->def);
     VNI->setIsPHIDef(ParentVNI->isPHIDef());
@@ -1119,7 +1125,7 @@ void SplitEditor::finish(SmallVectorImpl<unsigned> *LRMap) {
   }
 
   // Calculate spill weight and allocation hints for new intervals.
-  Edit->calculateRegClassAndHint(VRM.getMachineFunction(), LIS, SA.Loops);
+  Edit->calculateRegClassAndHint(VRM.getMachineFunction(), LIS, ISI, SA.Loops);
 
   assert(!LRMap || LRMap->size() == Edit->size());
 }

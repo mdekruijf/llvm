@@ -22,12 +22,15 @@
 #include "llvm/Pass.h"
 #include "llvm/Value.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
+#include "llvm/CodeGen/MachineIdempotentRegions.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/CodeGen/IdempotenceOptions.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
@@ -88,6 +91,7 @@ namespace {
     LiveDebugVariables *LDV;
     const MachineLoopInfo* Loops;
     AliasAnalysis *AA;
+    IdempotenceShadowIntervals *ISI;
     RegisterClassInfo RegClassInfo;
 
     /// JoinedCopies - Keep track of copies eliminated due to coalescing.
@@ -117,6 +121,7 @@ namespace {
     /// other things get coalesced, then it returns true by reference in
     /// 'Again'.
     bool JoinCopy(MachineInstr *TheCopy, bool &Again);
+    bool AttemptJoinCopy(MachineInstr *CopyMI, CoalescerPair &CP, bool &Again);
 
     /// JoinIntervals - Attempt to join these two intervals.  On failure, this
     /// returns false.  The output "SrcInt" will not have been modified, so we
@@ -179,6 +184,12 @@ namespace {
     /// eliminateUndefCopy - Handle copies of undef values.
     bool eliminateUndefCopy(MachineInstr *CopyMI, const CoalescerPair &CP);
 
+    void shrinkToUses(LiveInterval *LI) {
+      LIS->shrinkToUses(LI);
+      if (ISI)
+        ISI->recomputeShadow(*LI);
+    }
+
   public:
     static char ID; // Class identification, replacement for typeinfo
     RegisterCoalescer() : MachineFunctionPass(ID) {
@@ -205,6 +216,8 @@ INITIALIZE_PASS_DEPENDENCY(LiveIntervals)
 INITIALIZE_PASS_DEPENDENCY(LiveDebugVariables)
 INITIALIZE_PASS_DEPENDENCY(SlotIndexes)
 INITIALIZE_PASS_DEPENDENCY(MachineLoopInfo)
+INITIALIZE_PASS_DEPENDENCY(IdempotenceShadowIntervals)
+INITIALIZE_PASS_DEPENDENCY(DivideMachineIdempotentRegions)
 INITIALIZE_PASS_DEPENDENCY(StrongPHIElimination)
 INITIALIZE_PASS_DEPENDENCY(PHIElimination)
 INITIALIZE_PASS_DEPENDENCY(TwoAddressInstructionPass)
@@ -378,6 +391,11 @@ void RegisterCoalescer::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addPreserved<SlotIndexes>();
   AU.addRequired<MachineLoopInfo>();
   AU.addPreserved<MachineLoopInfo>();
+  AU.addPreserved<MachineIdempotentRegions>();
+  AU.addPreserved<IdempotenceShadowIntervals>();
+  IdempotenceShadowIntervals::requireAnalysisForPreservation(&AU);
+  if (IdempotenceConstructionMode == IdempotenceOptions::OptimizeForSpeed)
+    AU.addRequiredID(DivideMachineIdempotentRegionsID);
   AU.addPreservedID(MachineDominatorsID);
   AU.addPreservedID(StrongPHIEliminationID);
   AU.addPreservedID(PHIEliminationID);
@@ -560,7 +578,7 @@ bool RegisterCoalescer::AdjustCopiesBackFrom(const CoalescerPair &CP,
   CopyMI->substituteRegister(IntA.reg, IntB.reg, CP.getSubIdx(),
                              *TRI);
   if (ALR->end == CopyIdx)
-    LIS->shrinkToUses(&IntA);
+    shrinkToUses(&IntA);
 
   ++numExtends;
   return true;
@@ -862,7 +880,7 @@ bool RegisterCoalescer::ReMaterializeTrivialDef(LiveInterval &SrcInt,
 
   // The source interval can become smaller because we removed a use.
   if (preserveSrcInt)
-    LIS->shrinkToUses(&SrcInt);
+    shrinkToUses(&SrcInt);
 
   return true;
 }
@@ -1002,8 +1020,9 @@ static bool removeIntervalIfEmpty(LiveInterval &li, LiveIntervals *LIS,
         if (!LIS->hasInterval(*SR))
           continue;
         LiveInterval &sli = LIS->getInterval(*SR);
-        if (sli.empty())
+        if (sli.empty()) {
           LIS->removeInterval(*SR);
+        }
       }
     LIS->removeInterval(li.reg);
     return true;
@@ -1147,25 +1166,36 @@ RegisterCoalescer::isWinToJoinCrossClass(unsigned SrcReg,
   return true;
 }
 
-
 /// JoinCopy - Attempt to join intervals corresponding to SrcReg/DstReg,
 /// which are the src/dst of the copy instruction CopyMI.  This returns true
 /// if the copy was successfully coalesced away. If it is not currently
 /// possible to coalesce this interval, but it may be possible if other
 /// things get coalesced, then it returns true by reference in 'Again'.
 bool RegisterCoalescer::JoinCopy(MachineInstr *CopyMI, bool &Again) {
-
   Again = false;
   if (JoinedCopies.count(CopyMI) || ReMatCopies.count(CopyMI))
     return false; // Already done.
 
   DEBUG(dbgs() << LIS->getInstructionIndex(CopyMI) << '\t' << *CopyMI);
-
   CoalescerPair CP(*TII, *TRI);
   if (!CP.setRegisters(CopyMI)) {
     DEBUG(dbgs() << "\tNot coalescable.\n");
     return false;
   }
+
+  bool Joined = AttemptJoinCopy(CopyMI, CP, Again);
+  if (ISI && Joined) {
+    if (LIS->hasInterval(CP.getSrcReg()))
+      ISI->recomputeShadow(LIS->getInterval(CP.getSrcReg()));
+    if (LIS->hasInterval(CP.getDstReg()))
+      ISI->recomputeShadow(LIS->getInterval(CP.getDstReg()));
+  }
+  return Joined;
+}
+
+bool RegisterCoalescer::AttemptJoinCopy(MachineInstr *CopyMI,
+                                        CoalescerPair &CP,
+                                        bool &Again) {
 
   // If they are already joined we continue.
   if (CP.getSrcReg() == CP.getDstReg()) {
@@ -1220,6 +1250,18 @@ bool RegisterCoalescer::JoinCopy(MachineInstr *CopyMI, bool &Again) {
       CP.flip();
   }
 
+  // Before we attempt to join, test shadow intervals.
+  LiveInterval *SrcLI = &LIS->getInterval(CP.getSrcReg());
+  LiveInterval *DstLI = &LIS->getInterval(CP.getDstReg());
+  if (ISI && !ISI->isRegisterCoalescingSafe(*SrcLI, *DstLI)) {
+    DEBUG(dbgs() << "\tIdempotence check failed.\n");
+
+    // Try again later.  It may be that the offending def was a copy that will
+    // be coalesced away later. TODO: true?
+    Again = true;
+    return false;
+  }
+
   // Okay, attempt to join these two intervals.  On failure, this returns false.
   // Otherwise, if one of the intervals being joined is a physreg, this method
   // always canonicalizes DstInt to be it.  The output "SrcInt" will not have
@@ -1235,7 +1277,9 @@ bool RegisterCoalescer::JoinCopy(MachineInstr *CopyMI, bool &Again) {
       return true;
 
     // If we can eliminate the copy without merging the live ranges, do so now.
-    if (!CP.isPartial()) {
+    // Migrating uses across region boundaries can break idempotence so
+    // disable if idempotence shadow intervals is being used.
+    if (!CP.isPartial() && !ISI) {
       if (AdjustCopiesBackFrom(CP, CopyMI) ||
           RemoveCopyByCommutingDef(CP, CopyMI)) {
         markAsJoined(CopyMI);
@@ -1685,14 +1729,14 @@ bool RegisterCoalescer::JoinIntervals(CoalescerPair &CP) {
   // If B = X was the last use of X in a liverange, we have to shrink it now
   // that B = X is gone.
   for (SmallVector<unsigned, 8>::iterator I = SourceRegisters.begin(),
-         E = SourceRegisters.end(); I != E; ++I) {
-    LIS->shrinkToUses(&LIS->getInterval(*I));
-  }
+         E = SourceRegisters.end(); I != E; ++I)
+    shrinkToUses(&LIS->getInterval(*I));
 
   // If we get here, we know that we can coalesce the live ranges.  Ask the
   // intervals to coalesce themselves now.
   LHS.join(RHS, &LHSValNoAssignments[0], &RHSValNoAssignments[0], NewVNInfo,
            MRI);
+
   return true;
 }
 
@@ -1834,6 +1878,18 @@ void RegisterCoalescer::releaseMemory() {
   ReMatDefs.clear();
 }
 
+class IgnoreJoinedCopiesQuery : public IdempotenceShadowIntervals::IgnoreQuery {
+ public:
+  typedef SmallPtrSet<MachineInstr *, 32> JoinedCopies;
+  IgnoreJoinedCopiesQuery(JoinedCopies *J) : JoinedCopies_(J) {}
+
+  virtual bool operator () (MachineInstr *MI) {
+    return JoinedCopies_->count(MI);
+  }
+ private:
+  JoinedCopies *JoinedCopies_;
+};
+
 bool RegisterCoalescer::runOnMachineFunction(MachineFunction &fn) {
   MF = &fn;
   MRI = &fn.getRegInfo();
@@ -1844,6 +1900,7 @@ bool RegisterCoalescer::runOnMachineFunction(MachineFunction &fn) {
   LDV = &getAnalysis<LiveDebugVariables>();
   AA = &getAnalysis<AliasAnalysis>();
   Loops = &getAnalysis<MachineLoopInfo>();
+  ISI = IdempotenceShadowIntervals::getAnalysisForPreservation(*this);
 
   DEBUG(dbgs() << "********** SIMPLE REGISTER COALESCING **********\n"
                << "********** Function: "
@@ -1856,6 +1913,11 @@ bool RegisterCoalescer::runOnMachineFunction(MachineFunction &fn) {
 
   // Join (coalesce) intervals if requested.
   if (EnableJoining) {
+    // Tell ISI to ignore the JoinedCopies instructions for the purposes of
+    // constructing and verifying shadow intervals.
+    IgnoreJoinedCopiesQuery Q(&JoinedCopies);
+    IdempotenceShadowIntervals::ScopedIgnoreQuerySetter S(ISI, &Q);
+
     joinIntervals();
     DEBUG({
         dbgs() << "********** INTERVALS POST JOINING **********\n";
@@ -1903,7 +1965,7 @@ bool RegisterCoalescer::runOnMachineFunction(MachineFunction &fn) {
         if (MI->allDefsAreDead()) {
           if (TargetRegisterInfo::isVirtualRegister(SrcReg) &&
               LIS->hasInterval(SrcReg))
-            LIS->shrinkToUses(&LIS->getInterval(SrcReg));
+            shrinkToUses(&LIS->getInterval(SrcReg));
           DoDelete = true;
         }
         if (!DoDelete) {
@@ -2007,6 +2069,7 @@ bool RegisterCoalescer::runOnMachineFunction(MachineFunction &fn) {
   DEBUG(LDV->dump());
   if (VerifyCoalescing)
     MF->verify(this, "After register coalescing");
+
   return true;
 }
 

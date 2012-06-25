@@ -20,6 +20,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntervalMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/CodeGen/IdempotenceShadowIntervals.h"
 
 namespace llvm {
 
@@ -43,6 +44,7 @@ public:
   const MachineFunction &MF;
   const VirtRegMap &VRM;
   const LiveIntervals &LIS;
+  const IdempotenceShadowIntervals *ISI;
   const MachineLoopInfo &Loops;
   const TargetInstrInfo &TII;
 
@@ -116,7 +118,9 @@ private:
   bool calcLiveBlockInfo();
 
 public:
-  SplitAnalysis(const VirtRegMap &vrm, const LiveIntervals &lis,
+  SplitAnalysis(const VirtRegMap &vrm,
+                const LiveIntervals &lis,
+                const IdempotenceShadowIntervals *isi,
                 const MachineLoopInfo &mli);
 
   /// analyze - set CurLI to the specified interval, and analyze how it may be
@@ -210,6 +214,7 @@ public:
 class SplitEditor {
   SplitAnalysis &SA;
   LiveIntervals &LIS;
+  IdempotenceShadowIntervals *ISI;
   VirtRegMap &VRM;
   MachineRegisterInfo &MRI;
   MachineDominatorTree &MDT;
@@ -348,8 +353,8 @@ private:
 public:
   /// Create a new SplitEditor for editing the LiveInterval analyzed by SA.
   /// Newly created intervals will be appended to newIntervals.
-  SplitEditor(SplitAnalysis &SA, LiveIntervals&, VirtRegMap&,
-              MachineDominatorTree&);
+  SplitEditor(SplitAnalysis &SA, LiveIntervals&, IdempotenceShadowIntervals *,
+              VirtRegMap&, MachineDominatorTree&);
 
   /// reset - Prepare for a new split.
   void reset(LiveRangeEdit&, ComplementSpillMode = SM_Partition);

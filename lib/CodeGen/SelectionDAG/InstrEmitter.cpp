@@ -311,6 +311,12 @@ InstrEmitter::AddRegisterOperand(MachineInstr *MI, SDValue Op,
   // multiple uses.
   // Tied operands are never killed, so we need to check that. And that
   // means we need to determine the index of the operand.
+
+  // FIXME: sometimes LLVM gets this wrong and it breaks idempotence
+  // verification.  Op.hasOneUse() returns true when there are multiple uses.
+  // I don't know why. 
+  bool isKill = false;
+#if 0
   bool isKill = Op.hasOneUse() &&
                 Op.getNode()->getOpcode() != ISD::CopyFromReg &&
                 !IsDebug &&
@@ -324,6 +330,7 @@ InstrEmitter::AddRegisterOperand(MachineInstr *MI, SDValue Op,
     if (isTied)
       isKill = false;
   }
+#endif
 
   MI->addOperand(MachineOperand::CreateReg(VReg, isOptDef,
                                            false/*isImp*/, isKill,
