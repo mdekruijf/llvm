@@ -34,6 +34,7 @@ class StringRecTy;
 class ListRecTy;
 class DagRecTy;
 class RecordRecTy;
+class CodeRecTy;
 
 // Init subclasses.
 class Init;
@@ -53,6 +54,7 @@ class VarInit;
 class FieldInit;
 class VarBitInit;
 class VarListElementInit;
+class CodeInit;
 
 // Other classes.
 class Record;
@@ -98,6 +100,7 @@ public:   // These methods should only be called from subclasses of Init
   virtual Init *convertValue( TernOpInit *UI) {
     return convertValue((TypedInit*)UI);
   }
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue(VarBitInit *VB) { return 0; }
   virtual Init *convertValue(   DefInit *DI) { return 0; }
   virtual Init *convertValue(   DagInit *DI) { return 0; }
@@ -117,6 +120,7 @@ public:   // These methods should only be called by subclasses of RecTy.
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 };
@@ -135,6 +139,7 @@ class BitRecTy : public RecTy {
 public:
   static BitRecTy *get() { return &Shared; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
   virtual Init *convertValue(   BitInit *BI) { return (Init*)BI; }
   virtual Init *convertValue(  BitsInit *BI);
@@ -161,6 +166,7 @@ public:
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return true; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 
@@ -178,6 +184,7 @@ public:
 
   unsigned getNumBits() const { return Size; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI);
   virtual Init *convertValue(   BitInit *UI);
   virtual Init *convertValue(  BitsInit *BI);
@@ -206,6 +213,7 @@ public:
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return true; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 
@@ -220,6 +228,7 @@ class IntRecTy : public RecTy {
 public:
   static IntRecTy *get() { return &Shared; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
   virtual Init *convertValue(   BitInit *BI);
   virtual Init *convertValue(  BitsInit *BI);
@@ -247,6 +256,7 @@ public:
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return true; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 
@@ -260,6 +270,7 @@ class StringRecTy : public RecTy {
 public:
   static StringRecTy *get() { return &Shared; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
   virtual Init *convertValue(   BitInit *BI) { return 0; }
   virtual Init *convertValue(  BitsInit *BI) { return 0; }
@@ -288,6 +299,7 @@ public:
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return true; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 };
@@ -305,6 +317,7 @@ public:
   static ListRecTy *get(RecTy *T) { return T->getListTy(); }
   RecTy *getElementType() const { return Ty; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
   virtual Init *convertValue(   BitInit *BI) { return 0; }
   virtual Init *convertValue(  BitsInit *BI) { return 0; }
@@ -334,6 +347,47 @@ public:
   virtual bool baseClassOf(const ListRecTy   *RHS) const {
     return RHS->getElementType()->typeIsConvertibleTo(Ty);
   }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
+  virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
+};
+
+/// CodeRecTy - 'code' - Represent an code fragment, function or method.
+///
+class CodeRecTy : public RecTy {
+  static CodeRecTy Shared;
+  CodeRecTy() {}
+public:
+  static CodeRecTy *get() { return &Shared; }
+
+  virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
+  virtual Init *convertValue(   BitInit *BI) { return 0; }
+  virtual Init *convertValue(  BitsInit *BI) { return 0; }
+  virtual Init *convertValue(   IntInit *II) { return 0; }
+  virtual Init *convertValue(StringInit *SI) { return 0; }
+  virtual Init *convertValue(  ListInit *LI) { return 0; }
+  virtual Init *convertValue(  CodeInit *CI) { return (Init*)CI; }
+  virtual Init *convertValue(VarBitInit *VB) { return 0; }
+  virtual Init *convertValue(   DefInit *DI) { return 0; }
+  virtual Init *convertValue(   DagInit *DI) { return 0; }
+  virtual Init *convertValue( UnOpInit *UI) { return RecTy::convertValue(UI);}
+  virtual Init *convertValue( BinOpInit *UI) { return RecTy::convertValue(UI);}
+  virtual Init *convertValue( TernOpInit *UI) { return RecTy::convertValue(UI);}
+  virtual Init *convertValue( TypedInit *TI);
+  virtual Init *convertValue(   VarInit *VI) { return RecTy::convertValue(VI);}
+  virtual Init *convertValue( FieldInit *FI) { return RecTy::convertValue(FI);}
+
+  std::string getAsString() const { return "code"; }
+
+  bool typeIsConvertibleTo(const RecTy *RHS) const {
+    return RHS->baseClassOf(this);
+  }
+  virtual bool baseClassOf(const BitRecTy    *RHS) const { return false; }
+  virtual bool baseClassOf(const BitsRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const IntRecTy    *RHS) const { return false; }
+  virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
+  virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return true; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 };
@@ -346,6 +400,7 @@ class DagRecTy : public RecTy {
 public:
   static DagRecTy *get() { return &Shared; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
   virtual Init *convertValue(   BitInit *BI) { return 0; }
   virtual Init *convertValue(  BitsInit *BI) { return 0; }
@@ -373,6 +428,7 @@ public:
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return true; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const { return false; }
 };
@@ -390,6 +446,7 @@ public:
 
   Record *getRecord() const { return Rec; }
 
+  virtual Init *convertValue(  CodeInit *CI) { return 0; }
   virtual Init *convertValue( UnsetInit *UI) { return (Init*)UI; }
   virtual Init *convertValue(   BitInit *BI) { return 0; }
   virtual Init *convertValue(  BitsInit *BI) { return 0; }
@@ -415,6 +472,7 @@ public:
   virtual bool baseClassOf(const BitsRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const IntRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const StringRecTy *RHS) const { return false; }
+  virtual bool baseClassOf(const CodeRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const ListRecTy   *RHS) const { return false; }
   virtual bool baseClassOf(const DagRecTy    *RHS) const { return false; }
   virtual bool baseClassOf(const RecordRecTy *RHS) const;
@@ -728,6 +786,28 @@ public:
     assert(0 && "Illegal element reference off string");
     return 0;
   }
+};
+
+/// CodeInit - "[{...}]" - Represent a code fragment.
+///
+class CodeInit : public Init {
+  std::string Value;
+
+  explicit CodeInit(const std::string &V) : Value(V) {}
+
+  CodeInit(const CodeInit &Other);  // Do not define.
+  CodeInit &operator=(const CodeInit &Other);  // Do not define.
+
+public:
+  static CodeInit *get(const std::string &V);
+
+  const std::string &getValue() const { return Value; }
+
+  virtual Init *convertInitializerTo(RecTy *Ty) const {
+    return Ty->convertValue(const_cast<CodeInit *>(this));
+  }
+
+  virtual std::string getAsString() const { return "[{" + Value + "}]"; }
 };
 
 /// ListInit - [AL, AH, CL] - Represent a list of defs
@@ -1526,6 +1606,12 @@ public:
   /// the value is not the right type.
   ///
   DagInit *getValueAsDag(StringRef FieldName) const;
+
+  /// getValueAsCode - This method looks up the specified field and returns
+  /// its value as the string data in a CodeInit, throwing an exception if the
+  /// field does not exist or if the value is not a code object.
+  ///
+  std::string getValueAsCode(StringRef FieldName) const;
 };
 
 raw_ostream &operator<<(raw_ostream &OS, const Record &R);
