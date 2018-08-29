@@ -243,6 +243,8 @@ void initializeInstSimplifierPass(PassRegistry&);
 void initializeUnpackMachineBundlesPass(PassRegistry&);
 void initializeFinalizeMachineBundlesPass(PassRegistry&);
 
+/// Added by Jianping Zeng on 8/29/2018
+void initializeRegisterRenamingPass(PassRegistry&);
 }
 
 #endif

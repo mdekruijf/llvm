@@ -60,6 +60,9 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeUnreachableMachineBlockElimPass(Registry);
   initializeVirtRegMapPass(Registry);
   initializeLowerIntrinsicsPass(Registry);
+
+  // Added by Jianping Zeng on 8/29/2018
+  initializeRegisterRenamingPass(Registry);
 }
 
 void LLVMInitializeCodeGen(LLVMPassRegistryRef R) {

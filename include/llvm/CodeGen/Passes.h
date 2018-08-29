@@ -267,6 +267,11 @@ namespace llvm {
   ///
   FunctionPass *createFinalizeMachineBundlesPass();
 
+  /// createRegisterRenaming - This pass will performs renaming operation over
+  /// anti-dependence to accomplish idempotence.
+  /// @author Jianping Zeng.
+  FunctionPass *createRegisterRenamingPass();
+
 } // End llvm namespace
 
 #endif

@@ -110,7 +110,10 @@ add_llvm_library(LLVMCodeGen
   IdempotenceOptions.cpp
   MachineIdempotentRegions.cpp
   ConstructIdempotentRegions.cpp
-  PatchMachineIdempotentRegions.cpp  
+  PatchMachineIdempotentRegions.cpp
+
+  # Our implementation for idempotence
+  IdemRegRename/IdemRegisterRenaming.cpp
   )
 
 add_subdirectory(SelectionDAG)
