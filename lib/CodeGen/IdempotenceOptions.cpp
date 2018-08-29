@@ -48,5 +48,10 @@ cl::opt<IdempotenceOptions::PreservationMode> IdempotencePreservationMode(
                clEnumValEnd),
     cl::init(IdempotenceOptions::NoPreservation));
 
+cl::opt<bool> EnableRegisterRenaming(
+    "enable-reg-renaming", cl::Hidden,
+    cl::desc("Indicates if enable register renaming or not"),
+    cl::init(false));
+
 } // namespace llvm
 

@@ -60,6 +60,9 @@ namespace llvm {
   extern cl::opt<IdempotenceOptions::PreservationMode>
     IdempotencePreservationMode;
 
+  /// Flags tell compiler if should enable register renaming or not.
+  /// @author Jianping Zeng.
+  extern cl::opt<bool> EnableRegisterRenaming;
 } // namespace llvm
 
 #endif // LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H

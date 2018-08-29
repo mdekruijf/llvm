@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <llvm/CodeGen/IdempotenceOptions.h>
 #include "ARMTargetMachine.h"
 #include "ARMFrameLowering.h"
 #include "ARM.h"
@@ -125,6 +126,13 @@ bool ARMBaseTargetMachine::addPreRegAlloc(PassManagerBase &PM) {
     PM.add(createARMLoadStoreOptimizationPass(true));
   if (getOptLevel() != CodeGenOpt::None && Subtarget.isCortexA9())
     PM.add(createMLxExpansionPass());
+  return true;
+}
+
+bool ARMBaseTargetMachine::addPostRegAlloc(PassManagerBase &PM) {
+  if (EnableRegisterRenaming) {
+    PM.add(llvm::createRegisterRenamingPass());
+  }
   return true;
 }
 

@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <llvm/CodeGen/IdempotenceOptions.h>
 #include "X86TargetMachine.h"
 #include "X86.h"
 #include "llvm/PassManager.h"
@@ -133,6 +134,9 @@ bool X86TargetMachine::addPreRegAlloc(PassManagerBase &PM) {
 }
 
 bool X86TargetMachine::addPostRegAlloc(PassManagerBase &PM) {
+  if (EnableRegisterRenaming) {
+    PM.add(llvm::createRegisterRenamingPass());
+  }
   PM.add(createX86FloatingPointStackifierPass());
   return true;  // -print-machineinstr should print after this.
 }
