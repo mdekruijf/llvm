@@ -13,6 +13,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include <algorithm>
 
 #define DEBUG_TYPE "reg-renaming"
 
@@ -45,6 +46,9 @@ namespace {
     void collectRefDefUseInfo(MachineInstr *mi, IdempotentRegion *region);
     bool shouldRename(AntiDepPair pair);
     unsigned choosePhysRegForRenaming(MachineOperand *use);
+    unsigned tryChooseFreeRegister();
+
+
     // records all def registers by instr before current mi.
     std::map<MachineInstr*, std::set<int>> prevDefRegs;
     // records all use registers of current mi and previous mi.
@@ -53,6 +57,172 @@ namespace {
     const TargetInstrInfo *tii;
     const TargetRegisterInfo *tri;
     const MachineFunction *mf;
+  };
+  enum {
+    LOAD,
+    USE,
+    DEF,
+    STORE,
+    NUM
+  };
+
+  class LiveRange {
+  public:
+    int start;
+    int end;
+    LiveRange *next;
+
+  public:
+    static LiveRange EndMarker;
+
+    LiveRange(int _defIdx, int _killIdx, LiveRange * _next) :
+        start(_defIdx), end(_killIdx), next(_next) {}
+    bool contains(int idx) {
+      return start <= idx && idx <= end;
+    }
+    void print(llvm::raw_ostream &OS) {
+      OS<<"["<<start<<", "<<end<<"]";
+    }
+    void dump() { print(llvm::errs()); }
+    int intersectsAt(LiveRange *r) {
+
+    }
+
+  };
+  LiveRange LiveRange::EndMarker(INT32_MAX, INT32_MAX, 0);
+
+  class UsePoint {
+  public:
+    int id;
+    MachineOperand *mo;
+    UsePoint(int ID, MachineOperand *MO) : id(ID), mo(MO) {}
+  };
+
+  class LiveInterval {
+  public:
+    int reg;
+    LiveRange *first;
+    LiveRange *last;
+    std::set<UsePoint> usePoints;
+
+    LiveInterval() : reg(0), first(0), last(0), usePoints() {}
+    ~LiveInterval() {
+      if (first) {
+        auto cur = first;
+        while (cur) {
+          auto next = cur->next;
+          delete cur;
+          cur = next;
+        }
+      }
+    }
+
+    std::set<UsePoint> &getUsePoint() { return usePoints; }
+
+    void addRange(int from, int to) {
+      assert(from <= to && "Invalid range!");
+      if (first == &LiveRange::EndMarker || to < first->end)
+        first = insertRangeBefore(from, to, first);
+      else {
+        LiveRange *r = first;
+        while (r != &LiveRange::EndMarker) {
+          if (to >= r->end)
+            r = r->next;
+          else
+            break;
+        }
+        insertRangeBefore(from, to, r);
+      }
+    }
+
+    LiveRange *getLast() { return last; }
+    void addUsePoint(int numMI, MachineOperand *MO) {
+      usePoints.insert(UsePoint(numMI, MO));
+    }
+
+    void print(llvm::raw_ostream &OS, const TargetRegisterInfo &tri) {
+      OS << (TargetRegisterInfo::isPhysicalRegister(reg) ?
+             tri.getName(reg) : "%vreg" + reg);
+      LiveRange *r = first;
+      while (r && r != &LiveRange::EndMarker) {
+        r->dump();
+        OS << ",";
+        r = r->next;
+      }
+
+      OS << " Use points: [";
+      unsigned i = 0, size = usePoints.size();
+      for (UsePoint up : usePoints) {
+        OS << up.id;
+        if (i < size - 1)
+          OS << ",";
+        ++i;
+      }
+      OS << "]";
+    }
+
+    void dump(TargetRegisterInfo &TRI) { print(llvm::errs(), TRI); }
+    bool isExpiredAt(int pos) { return getLast()->end <= pos; }
+    bool isLiveAt(int pos) {
+      if (pos <= first->start || pos >= last->end)
+        return false;
+
+      LiveRange *itr = first;
+      while (itr != &LiveRange::EndMarker) {
+        if (itr->contains(pos))
+          return true;
+        itr = itr->next;
+      }
+      return false;
+    }
+
+    int beginNumber() { return first->start; }
+    int endNumber() { return last->end; }
+
+    int intersectAt(LiveInterval *li) {
+      return first->intersectsAt(li->first);
+    }
+
+    bool intersects(LiveInterval *cur) {
+      assert(cur);
+      if (cur->beginNumber() > endNumber())
+        return false;
+
+      return intersectAt(cur) != -1;
+    }
+
+  private:
+    LiveRange *insertRangeBefore(int from, int to, LiveRange *cur) {
+      assert(cur == &LiveRange::EndMarker || cur->end == INT32_MAX ||
+          (cur->next && to < cur->next->start && "Not inserting at begining of interval"));
+      assert(from <= cur->end && "Not inserting at begining of interval");
+      if (cur->start <= to) {
+        assert(cur != &LiveRange::EndMarker && "First range must not be EndMarker");
+        cur->start = std::min(from, cur->start);
+        cur->end = std::max(to, cur->end);
+      } else {
+        if (cur == last)
+          cur = last = new LiveRange(from, to, cur);
+        else {
+          LiveRange *r = new LiveRange(from, to, last->next);
+          last->next = r;
+          last = r;
+        }
+      }
+      return cur;
+    }
+  };
+
+  class LiveIntervalAnalysis {
+    std::vector<MachineInstr*> idx2MI;
+    std::map<MachineInstr, int> mi2Ix;
+    const TargetRegisterInfo* tri;
+    std::map<int, LiveInterval*> intervals;
+    llvm::BitVector liveIns;
+    llvm::BitVector liveOuts;
+    llvm::BitVector allocatableRegs;
+
+
   };
 }
 
@@ -129,6 +299,9 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
         for (; itr != end; ++itr) {
           MachineBasicBlock *pred = *itr;
           MachineInstr *predMI = &*pred->getLastNonDebugInstr();
+          if (std::find(region->inst_begin(), region->inst_end(), predMI) == region->inst_end())
+            continue;
+
           std::set<MachineOperand*> localUses;
           std::set<int> localDefs;
           getDefUses(predMI, &localDefs, &localUses);
