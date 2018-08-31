@@ -85,7 +85,7 @@ bool DeadMachineInstructionElim::isDead(const MachineInstr *MI) const {
 static bool isLiveInCopy(MachineBasicBlock::const_iterator I,
                          const MachineRegisterInfo &MRI) {
   const MachineBasicBlock *MBB = I->getParent();
-  for (MachineBasicBlock::const_reverse_iterator RI(next(I)), RE = MBB->rend();
+  for (MachineBasicBlock::const_reverse_iterator RI(llvm::next(I)), RE = MBB->rend();
        RI != RE; ++RI) {
     const MachineInstr *MI = &*RI;
     if (MBB->isLandingPad() && (MI->isEHLabel() || MI->isPHI()))

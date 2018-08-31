@@ -283,7 +283,7 @@ void PatchMachineIdempotentRegions::patchCallingConvention() {
             << *I);
 
       // Ignore tail calls.
-      MachineBasicBlock::iterator Next = next(I);
+      MachineBasicBlock::iterator Next = llvm::next(I);
       if (Next == IE)
         continue;
 

@@ -544,7 +544,7 @@ void MemoryIdempotenceAnalysisImpl::processRedundantCandidate(
   assert(NewPosition <= OldPosition && "new position has higher priority");
 
   // Re-insert by rotation.
-  std::rotate(NewPosition, OldPosition, next(OldPosition));
+  std::rotate(NewPosition, OldPosition, llvm::next(OldPosition));
   DEBUG(dbgs() << "  After: ";
         dumpCandidate(*RedundantInfo, *Worklist);
         dbgs() << "\n");

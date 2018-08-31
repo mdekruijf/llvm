@@ -214,8 +214,9 @@ class IdempotentRegion {
 
     // Comparison.
     bool operator==(const dfs_inst_iterator &X) const {
-      return MBBIterator_ == X.MBBIterator_ && It_ == X.It__;
+      return MBBIterator_ == X.MBBIterator_ && this->It_ == X.It_;
     }
+
     bool operator!=(const dfs_inst_iterator &X) const {
       return !operator==(X);
     }
