@@ -370,3 +370,8 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   // Step#6: TODO compute spilling weight for each interval.
   return false;
 }
+
+void LiveIntervalAnalysisIdem::addNewInterval(unsigned int reg,
+                                              LiveIntervalIdem *pIdem) {
+  intervals.insert(std::pair<unsigned, LiveIntervalIdem*>(reg, pIdem));
+}

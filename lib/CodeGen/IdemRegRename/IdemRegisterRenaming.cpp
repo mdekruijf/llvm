@@ -17,6 +17,8 @@
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include <llvm/Support/Debug.h>
 #include "LiveIntervalAnalysisIdem.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/Target/TargetData.h"
 
 #include <algorithm>
 #include <iterator>
@@ -53,18 +55,28 @@ namespace {
     void collectRefDefUseInfo(MachineInstr *mi, IdempotentRegion *region);
     bool shouldRename(AntiDepPair pair);
     unsigned choosePhysRegForRenaming(MachineOperand *use);
-    unsigned tryChooseFreeRegister();
+    unsigned tryChooseFreeRegister(LiveIntervalIdem &interval,
+                                   const TargetRegisterClass &rc,
+                                   BitVector &allocSet);
 
+    unsigned tryChooseBlockedRegister(LiveIntervalIdem &interval,
+                                      const TargetRegisterClass &rc,
+                                      BitVector &allocSet);
+
+    void spillOutInterval(LiveIntervalIdem *interval);
 
     // records all def registers by instr before current mi.
-    std::map<MachineInstr*, std::set<int>> prevDefRegs;
+    std::map<MachineInstr*, std::set<unsigned>> prevDefRegs;
     // records all use registers of current mi and previous mi.
     std::map<MachineInstr*, std::set<MachineOperand*>> prevUseRegs;
     std::vector<AntiDepPair> antiDeps;
     const TargetInstrInfo *tii;
     const TargetRegisterInfo *tri;
     const MachineFunction *mf;
-    const LiveIntervalAnalysisIdem *li;
+    LiveIntervalAnalysisIdem *li;
+    MachineFrameInfo *mfi;
+    MachineRegisterInfo *mri;
+    const TargetData *td;
   };
 }
 
@@ -98,11 +110,11 @@ static void intersect(std::set<T> &res, std::set<T> lhs, std::set<T> rhs) {
   }
 }
 
-static void getDefUses(MachineInstr *mi, std::set<int> *defs, std::set<MachineOperand *> *uses) {
+static void getDefUses(MachineInstr *mi, std::set<unsigned> *defs, std::set<MachineOperand *> *uses) {
   for (unsigned i = 0, e = mi->getNumOperands(); i < e; i++) {
     MachineOperand *mo = &mi->getOperand(i);
     if (!mo->isReg() || !mo->getReg()) continue;
-    unsigned reg = mo->getReg();
+    unsigned &&reg = mo->getReg();
     assert(TargetRegisterInfo::isPhysicalRegister(reg));
     if (mo->isDef() && defs)
       defs->insert(reg);
@@ -126,14 +138,14 @@ bool contains(IdempotentRegion::inst_iterator begin,
 void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
     IdempotentRegion *region) {
   std::set<MachineOperand*> uses;
-  std::set<int> defs;
+  std::set<unsigned> defs;
   getDefUses(mi, &defs, &uses);
 
   if (defs.empty() || defs.size() != 1)
     return;
 
   if (mi == &region->getEntry()) {
-    prevDefRegs[mi] = std::set<int>();
+    prevDefRegs[mi] = std::set<unsigned>();
     prevUseRegs[mi] = uses;
   }
   else {
@@ -141,11 +153,11 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
     if (mi == &mi->getParent()->front()) {
       MachineBasicBlock *mbb = mi->getParent();
       if (mbb->pred_empty()) {
-        prevDefRegs[mi] = std::set<int>();
+        prevDefRegs[mi] = std::set<unsigned>();
         prevUseRegs[mi] = uses;
       }
       else {
-        std::set<int> &predDefs = prevDefRegs[mi];
+        std::set<unsigned> &predDefs = prevDefRegs[mi];
         std::set<MachineOperand*> &predUses = prevUseRegs[mi];
 
         auto itr = mbb->pred_begin();
@@ -157,7 +169,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
             continue;
 
           std::set<MachineOperand*> localUses;
-          std::set<int> localDefs;
+          std::set<unsigned> localDefs;
           getDefUses(predMI, &localDefs, &localUses);
 
           Union(predDefs, localDefs, prevDefRegs[predMI]);
@@ -168,7 +180,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       }
     }
     // otherwise
-    std::set<int> localPrevDefs;
+    std::set<unsigned> localPrevDefs;
     MachineBasicBlock::iterator miItr(mi);
     --miItr;
     getDefUses(miItr, &localPrevDefs, 0);
@@ -189,15 +201,97 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
 bool RegisterRenaming::shouldRename(AntiDepPair pair) {
   auto use = pair.use;
   MachineInstr *useMI = use->getParent();
-  std::set<int> &defs = prevDefRegs[useMI];
+  std::set<unsigned> &defs = prevDefRegs[useMI];
   return !defs.count(use->getReg());
+}
+
+void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
+  /// FIXME, I don't  know whether spilling code in here will arise no idempotence
+  int frameIndex = INT_MIN;
+  for (auto itr = interval->usepoint_begin(), end = interval->usepoint_end();
+      itr != end; ++itr) {
+    MachineOperand *mo = itr->mo;
+    MachineInstr *mi = mo->getParent();
+    assert(mo->isReg());
+    const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo->getReg());
+    if (mo->isDef()) {
+      frameIndex = mfi->CreateSpillStackObject(rc->getSize(), rc->getAlignment());
+      MachineBasicBlock::instr_iterator insertPos = mi;
+      tii->storeRegToStackSlot(*mi->getParent(), ++insertPos, mo->getReg(), true, frameIndex, rc, tri);
+    }
+    else if (mo->isUse()) {
+       assert(frameIndex != INT_MIN);
+      tii->loadRegFromStackSlot(*mi->getParent(), mi, mo->getReg(), frameIndex, rc, tri);
+    }
+  }
+}
+
+unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
+                                                 const TargetRegisterClass &rc,
+                                                 BitVector &allocSet) {
+  for (auto itr = li->interval_begin(), end = li->interval_end(); itr != end; ++itr) {
+    if (!interval.intersects(itr->second)) {
+      // we only consider those live interval which doesn't interfere with current
+      // interval.
+      // No matching in register class should be ignored.
+      unsigned reg = itr->second->reg;
+      // Avoiding LiveIn register(such as argument register).
+      if (tri->getMinimalPhysRegClass(reg) != &rc || mri->isLiveIn(reg))
+        continue;
+
+      //FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
+      return reg;
+    }
+  }
+  return 0;
+}
+
+unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
+                                                    const TargetRegisterClass &rc,
+                                                    BitVector &allocSet) {
+  // choose an interval to be evicted out memory, and insert spilling code as
+  // appropriate.
+  unsigned costMax = INT_MAX;
+  LiveIntervalIdem *targetInter = 0;
+  for (auto itr = li->interval_begin(), end = li->interval_end(); itr != end; ++itr) {
+    assert(interval.intersects(itr->second) &&
+        "should not have interval doesn't interfere with current interval");
+
+    unsigned reg = itr->second->reg;
+    if (mri->isLiveIn(reg)) continue;
+
+    if (itr->second->costToSpill < costMax) {
+      costMax = itr->second->costToSpill;
+      targetInter = itr->second;
+    }
+  }
+  // no proper interval found to be spilled out.
+  if (!targetInter) return 0;
+  spillOutInterval(targetInter);
+  return targetInter->reg;
 }
 
 unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use) {
   auto rc = tri->getMinimalPhysRegClass(use->getReg());
   auto allocSet = tri->getAllocatableSet(*mf, rc);
-  // TODO
-  return 0;
+  MachineInstr *mi = use->getParent();
+  MachineBasicBlock::instr_iterator pos(mi);
+
+  LiveIntervalIdem *interval = new LiveIntervalIdem;
+  auto to = li->getIndex(mi);
+  auto from = to - 1;
+  interval->addRange(from, to);    // add an interval for a temporal move instr.
+
+  unsigned freeReg = tryChooseFreeRegister(*interval, *rc, allocSet);
+  if (freeReg) {
+    // obtains a free register used for move instr.
+    return freeReg;
+  }
+  freeReg = tryChooseBlockedRegister(*interval, *rc, allocSet);
+  assert(freeReg && "can not to rename the specified register!");
+  interval->reg = freeReg;
+  li->addNewInterval(freeReg, interval);
+  return freeReg;
 }
 
 bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
@@ -205,6 +299,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   tii = MF.getTarget().getInstrInfo();
   tri = MF.getTarget().getRegisterInfo();
   li = getAnalysisIfAvailable<LiveIntervalAnalysisIdem>();
+  mfi = MF.getFrameInfo();
+  mri = &MF.getRegInfo();
+  td = MF.getTarget().getTargetData();
 
   // Step#1: Collects regions
   MachineIdempotentRegions &regions = getAnalysis<MachineIdempotentRegions>();

@@ -61,8 +61,12 @@ public:
   LiveRangeIdem *first;
   LiveRangeIdem *last;
   std::set<UsePoint> usePoints;
+  /**
+   * Indicates the cost of spilling out this interval into memory.
+   */
+  unsigned costToSpill;
 
-  LiveIntervalIdem() : reg(0), first(0), last(0), usePoints() {}
+  LiveIntervalIdem() : reg(0), first(0), last(0), usePoints(), costToSpill(0) {}
   ~LiveIntervalIdem();
 
   std::set<UsePoint> &getUsePoint() { return usePoints; }
@@ -90,6 +94,10 @@ public:
 
     return intersectAt(cur) != -1;
   }
+
+  typedef std::set<UsePoint>::iterator iterator;
+  iterator usepoint_begin() { return usePoints.begin(); }
+  iterator usepoint_end() { return usePoints.end(); }
 
 private:
   LiveRangeIdem *insertRangeBefore(unsigned from, unsigned to, LiveRangeIdem *cur);
@@ -134,7 +142,16 @@ public:
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
-  unsigned getNumIntervals() const { return intervals.size(); }
+  unsigned long getNumIntervals() const { return intervals.size(); }
+
+  typedef std::map<unsigned, LiveIntervalIdem*>::iterator interval_iterator;
+  typedef std::map<unsigned, LiveIntervalIdem*>::const_iterator const_interval_iterator;
+
+  interval_iterator interval_begin() { return intervals.begin(); }
+  const_interval_iterator interval_begin() const { return intervals.begin(); }
+
+  interval_iterator interval_end() { return intervals.end(); }
+  const_interval_iterator interval_end() const { return intervals.end(); }
 
   bool runOnMachineFunction(MachineFunction &MF);
 
@@ -152,6 +169,7 @@ public:
   unsigned getIndexAtMBB(unsigned id) {
     return id / NUM;
   }
+  void addNewInterval(unsigned int reg, LiveIntervalIdem *pIdem);
 };
 }
 
