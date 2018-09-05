@@ -129,7 +129,9 @@ private:
                       std::vector<std::set<unsigned> > &liveOuts);
 public:
   static char ID;
-  LiveIntervalAnalysisIdem() : MachineFunctionPass(ID) {}
+  LiveIntervalAnalysisIdem() : MachineFunctionPass(ID) {
+    initializeLiveIntervalAnalysisIdemPass(*PassRegistry::getPassRegistry());
+  }
 
   const char *getPassName() const override {
     return "Live Interval computing for Register Renaming";
@@ -139,6 +141,7 @@ public:
     AU.addRequired<LiveVariables>();
     AU.addRequired<MachineDominatorTree>();
     AU.addRequired<MachineLoopInfo>();
+    AU.setPreservesAll();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
@@ -153,7 +156,7 @@ public:
   interval_iterator interval_end() { return intervals.end(); }
   const_interval_iterator interval_end() const { return intervals.end(); }
 
-  bool runOnMachineFunction(MachineFunction &MF);
+  bool runOnMachineFunction(MachineFunction &MF) override;
 
   MachineBasicBlock *getBlockAtId(unsigned pos) {
     unsigned index = pos / NUM;

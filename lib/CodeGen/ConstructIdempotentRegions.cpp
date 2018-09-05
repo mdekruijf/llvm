@@ -55,8 +55,8 @@ FunctionPass *llvm::createConstructIdempotentRegionsPass() {
 }
 
 bool ConstructIdempotentRegions::runOnFunction(Function &F) {
-  assert(IdempotenceConstructionMode != IdempotenceOptions::NoConstruction &&
-         "pass should not be run");
+  assert((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming)  && "pass should not be run");
 
   // Iterate over the analysis cut points and insert cuts.
   MemoryIdempotenceAnalysis *MIA = &getAnalysis<MemoryIdempotenceAnalysis>();

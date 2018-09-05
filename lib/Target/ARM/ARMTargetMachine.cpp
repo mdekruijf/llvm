@@ -129,13 +129,6 @@ bool ARMBaseTargetMachine::addPreRegAlloc(PassManagerBase &PM) {
   return true;
 }
 
-bool ARMBaseTargetMachine::addPostRegAlloc(PassManagerBase &PM) {
-  if (EnableRegisterRenaming) {
-    PM.add(llvm::createRegisterRenamingPass());
-  }
-  return true;
-}
-
 bool ARMBaseTargetMachine::addPreSched2(PassManagerBase &PM) {
   // FIXME: temporarily disabling load / store optimization pass for Thumb1.
   if (getOptLevel() != CodeGenOpt::None) {

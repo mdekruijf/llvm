@@ -79,8 +79,8 @@ void MachineIdempotentRegions::releaseMemory() {
 }
 
 bool MachineIdempotentRegions::runOnMachineFunction(MachineFunction &MF) {
-  assert(IdempotenceConstructionMode != IdempotenceOptions::NoConstruction &&
-         "pass should not be run");
+  assert((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && "pass should not be run");
 
   MF_  = &MF;
   TII_ = MF.getTarget().getInstrInfo();

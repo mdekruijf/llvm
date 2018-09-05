@@ -316,7 +316,8 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
 
   // Run idempotent region construction before loop strength reduction or
   // alias analysis becomes unreliable.
-  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction)
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming)
     PM.add(createConstructIdempotentRegionsPass());
 
   // Run loop strength reduction before anything else.
@@ -443,7 +444,8 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
     printAndVerify(PM, "After PreRegAlloc passes");
 
   // Patch idempotent regions before register allocation.
-  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction) {
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) {
     PM.add(createPatchMachineIdempotentRegionsPass());
     printAndVerifyIdem(PM, "After patching idempotent regions");
   }
@@ -451,6 +453,12 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   // Perform register allocation.
   PM.add(createRegisterAllocator(getOptLevel()));
   printAndVerifyIdem(PM, "After Register Allocation");
+
+  // Enable register renaming as a Post-RA pass.
+  // Commented by Jianping Zeng on 9/5/2018.
+  if (EnableRegisterRenaming) {
+    PM.add(llvm::createRegisterRenamingPass());
+  }
 
   // Perform stack slot coloring and post-ra machine LICM.
   if (getOptLevel() != CodeGenOpt::None) {

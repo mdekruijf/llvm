@@ -212,7 +212,8 @@ void IdempotenceShadowIntervals::releaseMemory() {
 }
 
 bool IdempotenceShadowIntervals::runOnMachineFunction(MachineFunction &MF) {
-  assert(IdempotenceConstructionMode != IdempotenceOptions::NoConstruction &&
+  assert((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) &&
          (IdempotencePreservationMode != IdempotenceOptions::NoPreservation ||
           IdempotenceConstructionMode == IdempotenceOptions::OptimizeForSpeed)
           && "pass should not be run");

@@ -344,7 +344,8 @@ void RAGreedy::getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequiredID(StrongPHIEliminationID);
   AU.addRequiredTransitiveID(RegisterCoalescerPassID);
   AU.addPreserved<MachineIdempotentRegions>();
-  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction)
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming)
     AU.addRequired<MachineIdempotentRegions>();
   AU.addPreserved<IdempotenceShadowIntervals>();
   IdempotenceShadowIntervals::requireAnalysisForPreservation(&AU);

@@ -155,8 +155,9 @@ void emitSPUpdate(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
 
   while (Offset) {
     uint64_t ThisVal = (Offset > Chunk) ? Chunk : Offset;
-    if (ThisVal == (Is64Bit ? 8 : 4) &&
-        IdempotenceConstructionMode == IdempotenceOptions::NoConstruction) {
+    if (ThisVal == (Is64Bit ? 8 : 4) && (
+        IdempotenceConstructionMode == IdempotenceOptions::NoConstruction ||
+        EnableRegisterRenaming)) {
       // Use push / pop instead.
       unsigned Reg = isSub
         ? (unsigned)(Is64Bit ? X86::RAX : X86::EAX)

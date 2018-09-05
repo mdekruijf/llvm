@@ -39,13 +39,14 @@ namespace {
   class RegisterRenaming : public MachineFunctionPass {
   public:
     static char ID;
-    RegisterRenaming() : MachineFunctionPass(ID) {}
-    virtual bool runOnMachineFunction(MachineFunction &MF);
-    virtual void getAnalysisUsage(AnalysisUsage &AU) {
-      AU.setPreservesCFG();
-      AU.addRequired<MachineIdempotentRegions>();
+    RegisterRenaming() : MachineFunctionPass(ID) {
+      initializeRegisterRenamingPass(*PassRegistry::getPassRegistry());
+    }
+    virtual bool runOnMachineFunction(MachineFunction &MF) override;
+    virtual void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.addRequired<LiveIntervalAnalysisIdem>();
-      MachineFunctionPass::getAnalysisUsage(AU);
+      AU.addRequired<MachineIdempotentRegions>();
+      AU.setPreservesAll();
     }
     const char *getPassName() const {
       return "Register Renaming for Idempotence pass";
@@ -84,11 +85,10 @@ char RegisterRenaming::ID = 0;
 
 INITIALIZE_PASS_BEGIN(RegisterRenaming, "reg-renaming",
     "Register Renaming for Idempotence", false, false)
-INITIALIZE_PASS_DEPENDENCY(MachineIdempotentRegions)
-INITIALIZE_PASS_DEPENDENCY(LiveIntervalAnalysisIdem)
+  INITIALIZE_PASS_DEPENDENCY(LiveIntervalAnalysisIdem)
+  INITIALIZE_PASS_DEPENDENCY(MachineIdempotentRegions)
 INITIALIZE_PASS_END(RegisterRenaming, "reg-renaming",
                     "Register Renaming for Idempotence", false, false)
-
 
 FunctionPass* llvm::createRegisterRenamingPass() {
   return new RegisterRenaming();
