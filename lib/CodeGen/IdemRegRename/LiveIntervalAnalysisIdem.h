@@ -23,6 +23,9 @@ enum {
   NUM
 };
 
+// forward declaration.
+class RangeIterator;
+
 class LiveRangeIdem {
 public:
   unsigned start;
@@ -41,9 +44,17 @@ public:
     OS<<"["<<start<<", "<<end<<"]";
   }
   void dump() { print(llvm::errs()); }
-  int intersectsAt(LiveRangeIdem *r) {
 
-  }
+  /**
+   * Determines the iterator position where this will interferes with
+   * another {@link LiveRangeItem} {@code r} at the start of Live Range.
+   *
+   * Return the interfered iterator position which will equal to end()
+   * if no interference exist.
+   * @param r2
+   * @return
+   */
+  RangeIterator intersectsAt(LiveRangeIdem *r2);
 };
 
 class UsePoint {
@@ -54,6 +65,31 @@ public:
   bool operator< (const UsePoint rhs) const;
 };
 
+class RangeIterator : public std::iterator<std::forward_iterator_tag, LiveRangeIdem*> {
+private:
+  LiveRangeIdem *cur;
+public:
+  RangeIterator(LiveRangeIdem *_first) : cur(_first) {}
+  RangeIterator() = default;
+
+  RangeIterator &operator++() {
+    cur = cur->next;
+    return *this;
+  }
+  RangeIterator operator++(int) {
+    RangeIterator res = *this;
+    ++res;
+    return res;
+  }
+  bool operator ==(RangeIterator itr) {
+    return cur == itr.cur;
+  }
+  bool operator !=(RangeIterator itr) { return !(*this == itr); }
+  LiveRangeIdem *operator->() {
+    assert(cur != &llvm::LiveRangeIdem::EndMarker);
+    return cur;
+  }
+};
 
 class LiveIntervalIdem {
 public:
@@ -66,7 +102,9 @@ public:
    */
   unsigned costToSpill;
 
-  LiveIntervalIdem() : reg(0), first(0), last(0), usePoints(), costToSpill(0) {}
+  LiveIntervalIdem() : reg(0), first(&LiveRangeIdem::EndMarker),
+                       last(&LiveRangeIdem::EndMarker),
+                       usePoints(), costToSpill(0) {}
   ~LiveIntervalIdem();
 
   std::set<UsePoint> &getUsePoint() { return usePoints; }
@@ -84,34 +122,54 @@ public:
   bool isLiveAt(unsigned pos);
   unsigned beginNumber() { return first->start; }
   unsigned endNumber() { return last->end; }
-  unsigned intersectAt(LiveIntervalIdem *li) {
-    return first->intersectsAt(li->first);
-  }
-  bool intersects(LiveIntervalIdem *cur) {
-    assert(cur);
-    if (cur->beginNumber() > endNumber())
-      return false;
 
-    return intersectAt(cur) != -1;
-  }
+  RangeIterator intersectAt(LiveIntervalIdem *li);
+  bool intersects(LiveIntervalIdem *cur);
 
   typedef std::set<UsePoint>::iterator iterator;
   iterator usepoint_begin() { return usePoints.begin(); }
   iterator usepoint_end() { return usePoints.end(); }
 
 private:
-  LiveRangeIdem *insertRangeBefore(unsigned from, unsigned to, LiveRangeIdem *cur);
+  /**
+   * Insert live range before the current range. It will merge range to be inserted with
+   * adjacent range as necessary.
+   * @param from
+   * @param to
+   * @param cur
+   */
+  void insertRangeBefore(unsigned from, unsigned to, LiveRangeIdem *&cur);
+
+public:
+  friend class RangeIterator;
+
+  RangeIterator begin() { return {first}; }
+  RangeIterator end() { return {last}; }
+  const RangeIterator begin() const { return RangeIterator(first); }
+  const RangeIterator end() const { return RangeIterator(last); }
 };
 
 class LiveIntervalAnalysisIdem : public MachineFunctionPass {
+  /**
+   * Map from instruction slot to corresponding machine instruction.
+   */
   std::vector<MachineInstr*> idx2MI;
+  /**
+   * Map from machine instruction to it's number.
+   */
   std::map<MachineInstr*, unsigned > mi2Idx;
   const TargetRegisterInfo* tri;
+  /**
+   * Map from original physical register to it's corresponding
+   * live interval.
+   */
   std::map<unsigned, LiveIntervalIdem*> intervals;
   std::vector<std::set<unsigned> > liveIns;
   std::vector<std::set<unsigned> > liveOuts;
   llvm::BitVector allocatableRegs;
   const MachineFunction *mf;
+  MachineDominatorTree *dt;
+  MachineLoopInfo *loopInfo;
 
 private:
   void computeLocalLiveSet(std::vector<MachineBasicBlock *> &sequence,
@@ -127,6 +185,12 @@ private:
   void handleRegisterDef(unsigned reg, MachineOperand *mo, unsigned start);
   void buildIntervals(std::vector<MachineBasicBlock*> &sequence,
                       std::vector<std::set<unsigned> > &liveOuts);
+  /**
+   * Weight each live interval by computing the use number of live interval
+   * according to it's loop nesting depth.
+   */
+  void weightLiveInterval();
+
 public:
   static char ID;
   LiveIntervalAnalysisIdem() : MachineFunctionPass(ID) {
@@ -160,7 +224,7 @@ public:
 
   MachineBasicBlock *getBlockAtId(unsigned pos) {
     unsigned index = pos / NUM;
-    assert(index >= 0 && index < idx2MI.size());
+    assert(index < idx2MI.size());
     return idx2MI[index]->getParent();
   }
 
@@ -173,6 +237,8 @@ public:
     return id / NUM;
   }
   void addNewInterval(unsigned int reg, LiveIntervalIdem *pIdem);
+
+  void dump(std::vector<MachineBasicBlock *> &sequence);
 };
 }
 

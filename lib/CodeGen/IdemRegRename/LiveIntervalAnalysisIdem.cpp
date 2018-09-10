@@ -5,6 +5,27 @@ using namespace llvm;
 
 LiveRangeIdem LiveRangeIdem::EndMarker(INT32_MAX, INT32_MAX, 0);
 
+RangeIterator LiveRangeIdem::intersectsAt(LiveRangeIdem *r2) {
+  assert(r2 && r2 != &llvm::LiveRangeIdem::EndMarker);
+  RangeIterator itr1(this), itr2(r2), end(&llvm::LiveRangeIdem::EndMarker);
+  while (true) {
+    if (itr1->start < itr2->start) {
+      if (itr1->end <= itr2->start)
+        ++itr1;
+      return itr1 == end ? end : itr2;
+    }
+    else {
+      if (itr1->start == itr2->start)
+        return itr1;
+      // Otherwise, r1.start > r2.start <--> r2.start < r1.start
+      if (itr2->end <= itr1->start) {
+        ++itr2;
+        return itr2 == end ? end : itr1;
+      }
+    }
+  }
+}
+
 LiveIntervalIdem::~LiveIntervalIdem() {
   if (first) {
     LiveRangeIdem * cur = first;
@@ -19,7 +40,7 @@ LiveIntervalIdem::~LiveIntervalIdem() {
 void LiveIntervalIdem::addRange(unsigned from, unsigned to) {
   assert(from <= to && "Invalid range!");
   if (first == &LiveRangeIdem::EndMarker || to < first->end)
-    first = insertRangeBefore(from, to, first);
+    insertRangeBefore(from, to, first);
   else {
     LiveRangeIdem *r = first;
     while (r != &LiveRangeIdem::EndMarker) {
@@ -66,7 +87,18 @@ bool LiveIntervalIdem::isLiveAt(unsigned pos) {
   return false;
 }
 
-LiveRangeIdem *LiveIntervalIdem::insertRangeBefore(unsigned from, unsigned to, LiveRangeIdem *cur) {
+bool LiveIntervalIdem::intersects(LiveIntervalIdem *cur) {
+  assert(cur);
+  if (cur->beginNumber() > endNumber())
+    return false;
+
+  return intersectAt(cur)!=end();
+}
+RangeIterator LiveIntervalIdem::intersectAt(LiveIntervalIdem *li) {
+  return first->intersectsAt(li->first);
+}
+
+void LiveIntervalIdem::insertRangeBefore(unsigned from, unsigned to, LiveRangeIdem *&cur) {
   assert(cur == &LiveRangeIdem::EndMarker || cur->end == INT32_MAX ||
       (cur->next && to < cur->next->start && "Not inserting at begining of interval"));
   assert(from <= cur->end && "Not inserting at begining of interval");
@@ -75,15 +107,14 @@ LiveRangeIdem *LiveIntervalIdem::insertRangeBefore(unsigned from, unsigned to, L
     cur->start = std::min(from, cur->start);
     cur->end = std::max(to, cur->end);
   } else {
-    if (cur == last)
-      cur = last = new LiveRangeIdem(from, to, cur);
+    if (first == last) {
+      assert(cur == first && "current node should be the first!");
+      cur = new LiveRangeIdem(from, to, last);
+    }
     else {
-      LiveRangeIdem *r = new LiveRangeIdem(from, to, last->next);
-      last->next = r;
-      last = r;
+      cur = new LiveRangeIdem(from, to, cur);
     }
   }
-  return cur;
 }
 
 bool UsePoint::operator< (const UsePoint rhs) const{
@@ -99,7 +130,6 @@ bool UsePoint::operator< (const UsePoint rhs) const{
     if (!mo->isReg() || !mo->getReg())
       continue;
 
-    unsigned reg = mo->getReg();
     if (&MO == mo)
       idx1 = i;
     else if (&MO == rhsMO)
@@ -200,8 +230,8 @@ void LiveIntervalAnalysisIdem::computeGlobalLiveSet(
           out.insert(set.begin(), set.end());
         }
       }
-
-      out.insert(liveOuts[num].begin(), liveOuts[num].end());
+      std::set<unsigned> lo = liveOuts[num];
+      out.insert(lo.begin(), lo.end());
       changed = out != liveOuts[num];
       if (changed)
         liveOuts[num] = out;
@@ -209,9 +239,11 @@ void LiveIntervalAnalysisIdem::computeGlobalLiveSet(
       std::set<unsigned> in = liveOuts[num];
       diff(in, liveKill[num]);
       in.insert(liveGen[num].begin(), liveGen[num].end());
-      changed = in != liveIns[num];
-      if (changed)
+      auto &res = liveIns[num];
+      if (in != res) {
         liveIns[num] = in;
+        changed = true;
+      }
     }
   } while (changed);
 }
@@ -315,19 +347,24 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   mf = &MF;
   tri = MF.getTarget().getRegisterInfo();
   unsigned size = MF.getNumBlockIDs();
-  int *numIncomingBranches = new int[size];
-  MachineDominatorTree *dt = getAnalysisIfAvailable<MachineDominatorTree>();
+  long *numIncomingBranches = new long[size];
+  dt = getAnalysisIfAvailable<MachineDominatorTree>();
+  loopInfo = getAnalysisIfAvailable<MachineLoopInfo>();
+
   assert(dt);
-  unsigned idx = 0;
-  for (MachineFunction::iterator itr = MF.begin(), end = MF.end();
-        itr != end; ++itr) {
-    unsigned numPreds = std::distance(itr->pred_begin(), itr->pred_end());
-    for (auto predItr = itr->pred_begin(), predEnd = itr->pred_end(); predItr != predEnd; ++predItr) {
-      if (dt->dominates(&*itr, *predItr))
-        --numPreds;
+  {
+    unsigned idx = 0;
+    for (MachineFunction::iterator itr = MF.begin(), end = MF.end();
+         itr != end; ++itr) {
+      long numPreds = std::distance(itr->pred_begin(), itr->pred_end());
+      for (auto predItr = itr->pred_begin(), predEnd = itr->pred_end();
+          predItr != predEnd; ++predItr) {
+        if (dt->dominates(&*itr, *predItr))
+          --numPreds;
+      }
+      numIncomingBranches[idx] = numPreds;
+      ++idx;
     }
-    numIncomingBranches[idx] = numPreds;
-    ++idx;
   }
 
   // Step #1: compute block order.
@@ -357,8 +394,8 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   computeLocalLiveSet(sequence, liveGen, liveKill);
 
   // Step#3: compute global live set.
-  liveIns.reserve(size);
-  liveOuts.reserve(size);
+  liveIns.resize(size);
+  liveOuts.resize(size);
   computeGlobalLiveSet(sequence, liveIns, liveOuts, liveGen, liveKill);
 
   // Step $4: number the machine instrs.
@@ -368,10 +405,54 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   buildIntervals(sequence, liveOuts);
 
   // Step#6: TODO compute spilling weight for each interval.
-  return false;
+  weightLiveInterval();
+
+  // Dump some useful information for it to review the correctness
+  // of this transformation.
+  dump(sequence);
+  return true;
 }
 
 void LiveIntervalAnalysisIdem::addNewInterval(unsigned int reg,
                                               LiveIntervalIdem *pIdem) {
   intervals.insert(std::pair<unsigned, LiveIntervalIdem*>(reg, pIdem));
+}
+
+void LiveIntervalAnalysisIdem::weightLiveInterval() {
+  // loop over all live intervals to compute spill cost.
+  auto itr = interval_begin();
+  auto end = interval_end();
+  for(; itr != end; ++itr) {
+    // Weight each use point by it's loop nesting deepth.
+    unsigned cost = 0;
+    for (auto &up : itr->second->usePoints) {
+      MachineBasicBlock *mbb = up.mo->getParent()->getParent();
+      if (MachineLoop *ml = loopInfo->getLoopFor(mbb)) {
+        cost += 10*ml->getLoopDepth();
+      }
+      else
+        cost += 1;
+    }
+    itr->second->costToSpill = cost;
+  }
+}
+
+void LiveIntervalAnalysisIdem::dump(std::vector<MachineBasicBlock *> &sequence) {
+  llvm::errs()<<"\nMachine instruction and Slot: \n";
+  for (auto mbb : sequence) {
+    auto mi = mbb->instr_begin();
+    auto end = mbb->instr_end();
+    for (; mi != end; ++mi) {
+      llvm::errs()<<mi2Idx[mi]<<":";
+      mi->dump();
+    }
+  }
+
+  llvm::errs()<<"\nLive Interval for Idempotence:\n";
+  auto li = interval_begin();
+  auto end = interval_end();
+  for (; li != end; ++li) {
+    li->second->dump(*const_cast<TargetRegisterInfo*>(mf->getTarget().getRegisterInfo()));
+    llvm::errs()<<"\n";
+  }
 }
