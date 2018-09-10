@@ -1,5 +1,9 @@
 #include <utility>
 
+#include <utility>
+
+#include <utility>
+
 //===----- IdemRegisterRenaming.cpp - Register regnaming after RA ---------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -47,6 +51,7 @@ namespace {
       AU.addRequired<LiveIntervalAnalysisIdem>();
       AU.addRequired<MachineIdempotentRegions>();
       AU.setPreservesAll();
+      MachineFunctionPass::getAnalysisUsage(AU);
     }
     const char *getPassName() const {
       return "Register Renaming for Idempotence pass";
@@ -97,9 +102,15 @@ FunctionPass* llvm::createRegisterRenamingPass() {
 //=== Implementation for class RegisterRenaming.  ====//
 
 template <class T>
-static void Union(std::set<T> &res, std::set<T> &lhs, std::set<T> &rhs) {
-  res.insert(lhs.begin(), lhs.end());
-  res.insert(rhs.begin(), rhs.begin());
+static std::set<T> Union(std::set<T> &lhs, std::set<T> &rhs) {
+  std::set<T> res;
+  for (auto e : lhs)
+    res.insert(e);
+  for (auto e : rhs)
+    res.insert(e);
+  //res.insert(lhs.begin(), lhs.end());
+  //res.insert(rhs.begin(), rhs.begin());
+  return res;
 }
 
 template <class T>
@@ -110,10 +121,26 @@ static void intersect(std::set<T> &res, std::set<T> lhs, std::set<T> rhs) {
   }
 }
 
+struct DefUseOfMI {
+  std::set<MachineOperand*> *uses;
+  std::set<unsigned> *defs;
+};
+
+std::map<MachineInstr*, DefUseOfMI*> map;
+
+DefUseOfMI* getOrCreateDefUse(MachineInstr *mi,
+                              std::set<MachineOperand*> *uses,
+                              std::set<unsigned> *defs) {
+  DefUseOfMI *&res = map[mi];
+  if (!res)
+    res = new DefUseOfMI{uses, defs};
+  return res;
+}
+
 static void getDefUses(MachineInstr *mi, std::set<unsigned> *defs, std::set<MachineOperand *> *uses) {
   for (unsigned i = 0, e = mi->getNumOperands(); i < e; i++) {
     MachineOperand *mo = &mi->getOperand(i);
-    if (!mo->isReg() || !mo->getReg()) continue;
+    if (!mo || !mo->isReg() || !mo->getReg()) continue;
     unsigned &&reg = mo->getReg();
     assert(TargetRegisterInfo::isPhysicalRegister(reg));
     if (mo->isDef() && defs)
@@ -137,12 +164,10 @@ bool contains(IdempotentRegion::inst_iterator begin,
 
 void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
     IdempotentRegion *region) {
+  if (!mi) return;
   std::set<MachineOperand*> uses;
   std::set<unsigned> defs;
   getDefUses(mi, &defs, &uses);
-
-  if (defs.empty() || defs.size() != 1)
-    return;
 
   if (mi == &region->getEntry()) {
     prevDefRegs[mi] = std::set<unsigned>();
@@ -164,36 +189,40 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
         auto end = mbb->pred_end();
         for (; itr != end; ++itr) {
           MachineBasicBlock *pred = *itr;
-          MachineInstr *predMI = &*pred->getLastNonDebugInstr();
-          if (contains(region->inst_begin(), region->inst_end(), predMI))
+          MachineInstr *predMI = &pred->back();
+          if (!contains(region->inst_begin(), region->inst_end(), predMI))
             continue;
 
           std::set<MachineOperand*> localUses;
           std::set<unsigned> localDefs;
           getDefUses(predMI, &localDefs, &localUses);
 
-          Union(predDefs, localDefs, prevDefRegs[predMI]);
-          Union(predUses, localUses, prevUseRegs[predMI]);
+          predDefs = Union(localDefs, prevDefRegs[predMI]);
+          predUses = Union(localUses, prevUseRegs[predMI]);
         }
 
         predUses.insert(uses.begin(), uses.end());
       }
     }
-    // otherwise
-    std::set<unsigned> localPrevDefs;
-    MachineBasicBlock::iterator miItr(mi);
-    --miItr;
-    getDefUses(miItr, &localPrevDefs, 0);
-    Union(prevDefRegs[mi], prevDefRegs[miItr], localPrevDefs);
-    Union(prevUseRegs[mi], prevUseRegs[miItr], uses);
+    else {
+      // otherwise
+      std::set<unsigned> localPrevDefs;
+      MachineBasicBlock::iterator miItr(mi);
+      --miItr;
+      getDefUses(miItr, &localPrevDefs, 0);
+      prevDefRegs[mi] = Union(prevDefRegs[miItr], localPrevDefs);
+      prevUseRegs[mi] = Union(prevUseRegs[miItr], uses);
+    }
   }
 
+  if (defs.empty())
+    return;
   unsigned defReg = *defs.begin();
   std::set<MachineOperand*> &prevUses = prevUseRegs[mi];
   for (MachineOperand *mo : prevUses) {
     if (mo->isReg() && mo->getReg() == defReg &&
-        prevDefRegs[mo->getParent()].count(mo->getReg())) {
-      antiDeps.push_back(AntiDepPair(mo, &mi->getOperand(0)));
+        !prevDefRegs[mo->getParent()].count(mo->getReg())) {
+      antiDeps.emplace_back(mo, &mi->getOperand(0));
     }
   }
 }
@@ -309,16 +338,21 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   auto end = regions.end();
   for (; itr != end; ++itr) {
     IdempotentRegion* region = *itr;
-    auto mi = region->inst_begin();
-    auto mie = region->inst_end();
-    // Step#2: visits register operand of each machine instr in the program sequence.
-    for (; mi != mie; ++mi) {
-      // Step#3: collects reg definition information.
-      // Step#4: collects reg uses information.
-      collectRefDefUseInfo(*mi, region);
+    auto mbb = region->mbb_begin();
+    auto end = region->mbb_end();
+    for (; mbb != end; ++mbb) {
+      auto mi = mbb.getMBB().instr_begin();
+      auto mie = mbb.getMBB().instr_end();
+      // Step#2: visits register operand of each machine instr in the program sequence.
+      for (; mi != mie; ++mi) {
+        // Step#3: collects reg definition information.
+        // Step#4: collects reg uses information.
+        collectRefDefUseInfo(mi, region);
+      }
     }
   }
 
+  bool changed = false;
   // Step#5: checks if we should rename the defined register according to usd-def,
   //         If it is, construct a pair of use-def reg pair.
   for (AntiDepPair pair : antiDeps) {
@@ -340,7 +374,8 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       ++itr2;
       // The new region starts at I.
       tii->emitIdemBoundary(*parent, itr2);
+      changed = true;
     }
   }
-  return true;
+  return changed;
 }

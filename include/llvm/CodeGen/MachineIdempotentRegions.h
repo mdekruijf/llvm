@@ -89,7 +89,8 @@ class IdempotentRegion {
         : Region_(&Region), TII_(NULL), Valid_(false), Skip_(false) {
       MachineBasicBlockItTy I = &Region.getEntry();
       MachineBasicBlockTy *MBB = I->getParent();
-      init(MBB, I);
+      if (MBB)
+        init(MBB, I);
     }
     dfs_mbb_iterator(const IdempotentRegion &Region, MachineBasicBlockTy *MBB)
         : Region_(&Region), TII_(NULL), Valid_(false), Skip_(false) {
@@ -100,7 +101,8 @@ class IdempotentRegion {
                      MachineBasicBlockTy *MBB,
                      MachineBasicBlockItTy I)
         : Region_(&Region), TII_(NULL), Valid_(false), Skip_(false) {
-      init(MBB, I);
+      if (MBB)
+        init(MBB, I);
     }
 
     // Return whether the iterator is valid.  False implies the end condition
@@ -204,7 +206,7 @@ class IdempotentRegion {
       tie(It_, End_) = *MBBIterator_;
     };
     dfs_inst_iterator(const IdempotentRegion &Region, MachineInstrTy *MI)
-        : MBBIterator_(Region, MI->getParent(), MI) {
+        : MBBIterator_(Region, MI?MI->getParent():0, MI) {
       tie(It_, End_) = *MBBIterator_;
     }
 
@@ -245,7 +247,7 @@ class IdempotentRegion {
   typedef dfs_inst_iterator<const MachineInstr> const_inst_iterator;
 
   inst_iterator       inst_begin()       { return inst_iterator(*this); }
-  inst_iterator       inst_end()         { return inst_iterator(*this, NULL); }
+  inst_iterator       inst_end()         { return inst_iterator(*this, nullptr); }
   const_inst_iterator inst_begin() const { return const_inst_iterator(*this); }
   const_inst_iterator inst_end()   const {
     return const_inst_iterator(*this, NULL);

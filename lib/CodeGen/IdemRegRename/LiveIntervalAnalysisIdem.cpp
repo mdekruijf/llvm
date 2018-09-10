@@ -334,7 +334,7 @@ void LiveIntervalAnalysisIdem::buildIntervals(
         assert(li);
         li->addRange(blockFrom, num);
         // extends the use to cross current instruction.
-        if (li->first->end == num)
+        if (li->first->end == num && li->first->start > 0)
           --li->first->start;
 
         li->addUsePoint(num, op);
