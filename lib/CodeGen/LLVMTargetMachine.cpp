@@ -300,6 +300,11 @@ void LLVMTargetMachine::printAndVerifyIdem(PassManagerBase &PM,
 bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
                                                bool DisableVerify,
                                                MCContext *&OutContext) {
+  // Set the RegisterRenaming on Optimization level >= 1
+  // Commented by Jianping Zeng on 9/11/2018
+  //if (getOptLevel() != CodeGenOpt::None)
+  //  EnableRegisterRenaming = true;
+
   // Standard LLVM-Level Passes.
 
   // Basic AliasAnalysis support.
@@ -458,6 +463,7 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   // Commented by Jianping Zeng on 9/5/2018.
   if (EnableRegisterRenaming) {
     PM.add(llvm::createRegisterRenamingPass());
+    printAndVerifyIdem(PM, "After Register Renaming for idem");
   }
 
   // Perform stack slot coloring and post-ra machine LICM.

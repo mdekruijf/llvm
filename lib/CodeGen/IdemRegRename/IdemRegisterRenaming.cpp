@@ -1,9 +1,3 @@
-#include <utility>
-
-#include <utility>
-
-#include <utility>
-
 //===----- IdemRegisterRenaming.cpp - Register regnaming after RA ---------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -27,6 +21,7 @@
 #include <algorithm>
 #include <iterator>
 #include <deque>
+#include <utility>
 
 #define DEBUG_TYPE "reg-renaming"
 
@@ -47,6 +42,7 @@ namespace {
     RegisterRenaming() : MachineFunctionPass(ID) {
       initializeRegisterRenamingPass(*PassRegistry::getPassRegistry());
     }
+
     virtual bool runOnMachineFunction(MachineFunction &MF) override;
     virtual void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.addRequired<LiveIntervalAnalysisIdem>();
@@ -73,6 +69,21 @@ namespace {
 
     void spillOutInterval(LiveIntervalIdem *interval);
 
+    void simplifyAntiDeps();
+
+    void insertMoveAndBoundary(AntiDepPair &pair);
+
+    void insertBoundaryAsNeed(MachineInstr *&useMI,
+                              unsigned defReg);
+    void clear() {
+      tii = 0;
+      mf = 0;
+      li = 0;
+      mfi = 0;
+      td = 0;
+      regions = 0;
+    }
+
     // records all def registers by instr before current mi.
     std::map<MachineInstr*, std::set<unsigned>> prevDefRegs;
     // records all use registers of current mi and previous mi.
@@ -86,6 +97,7 @@ namespace {
     MachineRegisterInfo *mri;
     const TargetData *td;
     std::deque<AntiDepPair> antiDepsList;
+    MachineIdempotentRegions *regions;
   };
 }
 
@@ -337,6 +349,95 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use) {
   return freeReg;
 }
 
+void RegisterRenaming::simplifyAntiDeps() {
+  // Step#5: checks if we should rename the defined register according to usd-def,
+  //         If it is, construct a pair of use-def reg pair.
+
+  // remove some equivalent anti-dependence, like
+  //    |----|
+  //    v    v
+  //   r0 = r0 + r1
+  //       /
+  //     /
+  //   r0 = r0 + 1
+  for (size_t i = 0, e = antiDeps.size(); i < e; i++) {
+    auto target = antiDeps[i];
+    for (size_t j = i + 1; j < e; ++j) {
+      auto pair = antiDeps[j];
+      if (!(pair.use->getParent() && pair.use->getParent()->getParent()) ||
+          !(pair.def->getParent() && pair.def->getParent()->getParent())) {
+        antiDeps[j] = antiDeps[e-1];
+        antiDeps.pop_back();
+        --j;
+        --e;
+        continue;
+      }
+
+      if (pair.use == target.use && pair.def != target.def &&
+          pair.def->getReg() == target.def->getReg()) {
+        // we can remove pair from antiDep list.
+        antiDeps[j] = antiDeps[e-1];
+        antiDeps.pop_back();
+        --j;
+        --e;
+      }
+    }
+  }
+}
+
+void RegisterRenaming::insertBoundaryAsNeed(MachineInstr *&useMI,
+                                            unsigned defReg) {
+  MachineBasicBlock *mbb = useMI->getParent();
+  assert(mbb);
+
+  bool boundaryExists = false;
+  auto end = mbb->rend();
+  decltype(end) itr(useMI);
+  ++itr;
+  while (itr != end) {
+    if (tii->isIdemBoundary(&*itr)) {
+      boundaryExists = true;
+      break;
+    }
+    auto defMO = itr->getOperand(0);
+    if (defMO.isReg() && defMO.getReg() && defMO.getReg() == defReg) {
+      // set is not needed.
+      // boundaryExists = false;
+      break;
+    }
+    ++itr;
+  }
+  // Insert a boundary as needed.
+  if (!boundaryExists) {
+    tii->emitIdemBoundary(*mbb, useMI);
+    useMI = --MachineBasicBlock::instr_iterator(useMI);
+  }
+  else
+    useMI = &*itr;
+}
+
+void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
+  auto useMI = pair.use->getParent();
+  unsigned phyReg = choosePhysRegForRenaming(pair.use);
+  assert(TargetRegisterInfo::isPhysicalRegister(phyReg));
+  assert(phyReg != pair.use->getReg());
+
+  // Step#8: substitute the old reg with phyReg.
+  unsigned oldReg = pair.use->getReg();
+  pair.use->setReg(phyReg);
+
+  MachineBasicBlock *parent = useMI->getParent();
+
+  // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
+  insertBoundaryAsNeed(useMI, phyReg);
+
+  assert(tii->isIdemBoundary(useMI) && "the mi at inserted position must be a splitting boundary!");
+  // Step#10: insert a move instruction before splitting boundary instr.
+  tii->copyPhysReg(*parent, useMI, DebugLoc(), phyReg, oldReg, false);
+
+  DEBUG(pair.use->getParent()->getParent()->dump());
+}
+
 bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   mf = &MF;
   tii = MF.getTarget().getInstrInfo();
@@ -347,9 +448,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   td = MF.getTarget().getTargetData();
 
   // Step#1: Collects regions
-  MachineIdempotentRegions &regions = getAnalysis<MachineIdempotentRegions>();
-  auto itr = regions.begin();
-  auto end = regions.end();
+  regions = getAnalysisIfAvailable<MachineIdempotentRegions>();
+  auto itr = regions->begin();
+  auto end = regions->end();
   for (; itr != end; ++itr) {
     IdempotentRegion* region = *itr;
     auto mbb = region->mbb_begin();
@@ -370,28 +471,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
   // Step#5: checks if we should rename the defined register according to usd-def,
   //         If it is, construct a pair of use-def reg pair.
-
-  // remove some equivalent anti-dependence, like
-  //    |----|
-  //    v    v
-  //   r0 = r0 + r1
-  //       /
-  //     /
-  //   r0 = r0 + 1
-  for (size_t i = 0, e = antiDeps.size(); i < e; i++) {
-    auto target = antiDeps[i];
-    for (size_t j = i + 1; j < e; ++j) {
-      auto pair = antiDeps[j];
-      if (pair.use == target.use && pair.def != target.def &&
-          pair.def->getReg() == target.def->getReg()) {
-        // we can remove pair from antiDep list.
-        antiDeps[j] = antiDeps[e-1];
-        antiDeps.pop_back();
-        --j;
-        --e;
-      }
-    }
-  }
+  simplifyAntiDeps();
 
   antiDepsList.insert(antiDepsList.end(), antiDeps.begin(), antiDeps.end());
   while (!antiDepsList.empty()) {
@@ -402,32 +482,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       // Step#6: choose a physical register for renaming.
       // Step#7: if there is no free physical register, using heuristic method to
       //         spill out a interval.
-      auto useMI = pair.use->getParent();
-      unsigned phyReg = choosePhysRegForRenaming(pair.use);
-      assert(TargetRegisterInfo::isPhysicalRegister(phyReg));
-      assert(phyReg != pair.use->getReg());
-
-      // Step#8: substitute the old reg with phyReg.
-      unsigned oldReg = pair.use->getReg();
-      pair.use->setReg(phyReg);
-
-      MachineBasicBlock *parent = useMI->getParent();
-      MachineBasicBlock::iterator itr2(useMI);
-
-      // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
-      bool needsBoundary = !tii->isIdemBoundary(--itr2);
-
-      // Step#9: insert a splitting boundary as necessary.
-      if (needsBoundary) {
-        // The new region starts at I.
-        tii->emitIdemBoundary(*parent, itr2);
-        ++itr2;
-      }
-      assert(tii->isIdemBoundary(itr2) && "the mi at inserted position must be a splitting boundary!");
-      // Step#10: insert a move instruction before splitting boundary instr.
-      tii->copyPhysReg(*parent, itr2, DebugLoc(), phyReg, oldReg, false);
-
-      DEBUG(pair.use->getParent()->getParent()->dump());
+      insertMoveAndBoundary(pair);
       changed = true;
     }
   }
