@@ -49,7 +49,7 @@ cl::opt<IdempotenceOptions::PreservationMode> IdempotencePreservationMode(
     cl::init(IdempotenceOptions::NoPreservation));
 
 cl::opt<bool> EnableRegisterRenaming(
-    "enable-reg-renaming", cl::Hidden,
+    "enable-reg-renaming-idem", cl::Hidden,
     cl::desc("Indicates if enable register renaming or not"),
     cl::init(false));
 

@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <deque>
 
 #define DEBUG_TYPE "reg-renaming"
 
@@ -64,6 +65,7 @@ namespace {
     unsigned tryChooseFreeRegister(LiveIntervalIdem &interval,
                                    const TargetRegisterClass &rc,
                                    BitVector &allocSet);
+    bool availableOnRegClass(unsigned physReg, const TargetRegisterClass &rc);
 
     unsigned tryChooseBlockedRegister(LiveIntervalIdem &interval,
                                       const TargetRegisterClass &rc,
@@ -83,6 +85,7 @@ namespace {
     MachineFrameInfo *mfi;
     MachineRegisterInfo *mri;
     const TargetData *td;
+    std::deque<AntiDepPair> antiDepsList;
   };
 }
 
@@ -255,21 +258,32 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
   }
 }
 
+bool RegisterRenaming::availableOnRegClass(unsigned physReg,
+                                           const TargetRegisterClass &rc) {
+  return tri->getMinimalPhysRegClass(physReg)->hasSubClassEq(&rc) && !mri->isLiveIn(physReg);
+}
+
 unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
                                                  const TargetRegisterClass &rc,
                                                  BitVector &allocSet) {
-  for (auto itr = li->interval_begin(), end = li->interval_end(); itr != end; ++itr) {
-    if (!interval.intersects(itr->second)) {
-      // we only consider those live interval which doesn't interfere with current
-      // interval.
-      // No matching in register class should be ignored.
-      unsigned reg = itr->second->reg;
-      // Avoiding LiveIn register(such as argument register).
-      if (tri->getMinimalPhysRegClass(reg) != &rc || mri->isLiveIn(reg))
-        continue;
+  for (int physReg = allocSet.find_first(); physReg > 0; physReg = allocSet.find_next(physReg)) {
+    if (li->intervals.count(physReg)) {
+      LiveIntervalIdem *itrv = li->intervals[physReg];
+      if (!itrv->intersects(&interval)) {
+        // we only consider those live interval which doesn't interfere with current
+        // interval.
+        // No matching in register class should be ignored.
+        // Avoiding LiveIn register(such as argument register).
+        if (!availableOnRegClass(physReg, rc))
+          continue;
 
-      //FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
-      return reg;
+        //FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
+        return physReg;
+      }
+    }
+    else if (availableOnRegClass(physReg, rc)){
+      // current physReg is free, so return it.
+      return static_cast<unsigned int>(physReg);
     }
   }
   return 0;
@@ -353,9 +367,37 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   }
 
   bool changed = false;
+
   // Step#5: checks if we should rename the defined register according to usd-def,
   //         If it is, construct a pair of use-def reg pair.
-  for (AntiDepPair pair : antiDeps) {
+
+  // remove some equivalent anti-dependence, like
+  //    |----|
+  //    v    v
+  //   r0 = r0 + r1
+  //       /
+  //     /
+  //   r0 = r0 + 1
+  for (size_t i = 0, e = antiDeps.size(); i < e; i++) {
+    auto target = antiDeps[i];
+    for (size_t j = i + 1; j < e; ++j) {
+      auto pair = antiDeps[j];
+      if (pair.use == target.use && pair.def != target.def &&
+          pair.def->getReg() == target.def->getReg()) {
+        // we can remove pair from antiDep list.
+        antiDeps[j] = antiDeps[e-1];
+        antiDeps.pop_back();
+        --j;
+        --e;
+      }
+    }
+  }
+
+  antiDepsList.insert(antiDepsList.end(), antiDeps.begin(), antiDeps.end());
+  while (!antiDepsList.empty()) {
+    AntiDepPair pair = antiDepsList.front();
+    antiDepsList.pop_front();
+
     if (shouldRename(pair)) {
       // Step#6: choose a physical register for renaming.
       // Step#7: if there is no free physical register, using heuristic method to
@@ -365,15 +407,27 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       assert(TargetRegisterInfo::isPhysicalRegister(phyReg));
       assert(phyReg != pair.use->getReg());
 
-      // Step#8: insert a move instruction before use of use-def pair.
+      // Step#8: substitute the old reg with phyReg.
+      unsigned oldReg = pair.use->getReg();
+      pair.use->setReg(phyReg);
+
       MachineBasicBlock *parent = useMI->getParent();
-      tii->copyPhysReg(*parent, useMI, DebugLoc(), phyReg, pair.use->getReg(), false);
       MachineBasicBlock::iterator itr2(useMI);
 
-      // Step#9: insert a splitting boundary(means Idem intrinsic call instr) after move instr
-      ++itr2;
-      // The new region starts at I.
-      tii->emitIdemBoundary(*parent, itr2);
+      // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
+      bool needsBoundary = !tii->isIdemBoundary(--itr2);
+
+      // Step#9: insert a splitting boundary as necessary.
+      if (needsBoundary) {
+        // The new region starts at I.
+        tii->emitIdemBoundary(*parent, itr2);
+        ++itr2;
+      }
+      assert(tii->isIdemBoundary(itr2) && "the mi at inserted position must be a splitting boundary!");
+      // Step#10: insert a move instruction before splitting boundary instr.
+      tii->copyPhysReg(*parent, itr2, DebugLoc(), phyReg, oldReg, false);
+
+      DEBUG(pair.use->getParent()->getParent()->dump());
       changed = true;
     }
   }

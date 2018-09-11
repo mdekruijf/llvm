@@ -150,6 +150,7 @@ public:
 };
 
 class LiveIntervalAnalysisIdem : public MachineFunctionPass {
+public:
   /**
    * Map from instruction slot to corresponding machine instruction.
    */
