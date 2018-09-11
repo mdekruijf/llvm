@@ -182,7 +182,7 @@ void LiveIntervalAnalysisIdem::numberMachineInstr(std::vector<MachineBasicBlock 
 
   idx2MI.clear();
   mi2Idx.clear();
-  idx2MI.reserve(totalMIs);
+  idx2MI.resize(totalMIs);
   unsigned index = 0;
   for (auto mbb : sequence) {
     auto mi = mbb->instr_begin();

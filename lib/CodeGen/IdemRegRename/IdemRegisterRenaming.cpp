@@ -232,12 +232,13 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
 
   if (defs.empty())
     return;
-  unsigned defReg = *defs.begin();
-  std::set<MachineOperand*> &prevUses = prevUseRegs[mi];
-  for (MachineOperand *mo : prevUses) {
-    if (mo->isReg() && mo->getReg() == defReg &&
-        !prevDefRegs[mo->getParent()].count(mo->getReg())) {
-      antiDeps.emplace_back(mo, &mi->getOperand(0));
+  for (unsigned  defReg : defs) {
+    std::set<MachineOperand *> &prevUses = prevUseRegs[mi];
+    for (MachineOperand *mo : prevUses) {
+      if (mo->isReg() && mo->getReg() == defReg &&
+          !prevDefRegs[mo->getParent()].count(mo->getReg())) {
+        antiDeps.emplace_back(mo, &mi->getOperand(0));
+      }
     }
   }
 }
@@ -329,6 +330,13 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
 unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use) {
   auto rc = tri->getMinimalPhysRegClass(use->getReg());
   auto allocSet = tri->getAllocatableSet(*mf, rc);
+
+  // remove the defined register by use mi from allocable set.
+  std::set<unsigned> defs;
+  getDefUses(use->getParent(), &defs, 0);
+  for (unsigned phy : defs)
+      allocSet[phy] = false;
+
   MachineInstr *mi = use->getParent();
   MachineBasicBlock::instr_iterator pos(mi);
 
