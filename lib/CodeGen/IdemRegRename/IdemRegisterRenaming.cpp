@@ -181,6 +181,11 @@ MachineInstr *getPrevMI(MachineInstr *mi) {
   return ilist_traits<MachineInstr>::getPrev(mi);
 }
 
+MachineInstr *getNextMI(MachineInstr *mi) {
+  if (!mi || !mi->getParent()) return nullptr;
+  return ilist_traits<MachineInstr>::getNext(mi);
+}
+
 void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
     IdempotentRegion *region) {
   if (!mi) return;
@@ -399,9 +404,12 @@ void RegisterRenaming::insertBoundaryAsNeed(MachineInstr *&useMI,
   assert(mbb);
 
   bool boundaryExists = false;
+  auto begin = mbb->rbegin();
   auto end = mbb->rend();
-  decltype(end) itr(useMI);
+  MachineBasicBlock::reverse_instr_iterator itr;
+  for (itr = begin; itr != end && &*itr != useMI; ++itr) {}
   ++itr;
+
   while (itr != end) {
     if (tii->isIdemBoundary(&*itr)) {
       boundaryExists = true;
