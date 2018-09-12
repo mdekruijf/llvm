@@ -96,7 +96,6 @@ namespace {
     MachineFrameInfo *mfi;
     MachineRegisterInfo *mri;
     const TargetData *td;
-    std::deque<AntiDepPair> antiDepsList;
     MachineIdempotentRegions *regions;
   };
 }
@@ -177,6 +176,11 @@ bool contains(IdempotentRegion::inst_iterator begin,
   return false;
 }
 
+MachineInstr *getPrevMI(MachineInstr *mi) {
+  if (!mi || !mi->getParent()) return nullptr;
+  return ilist_traits<MachineInstr>::getPrev(mi);
+}
+
 void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
     IdempotentRegion *region) {
   if (!mi) return;
@@ -210,6 +214,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
 
           std::set<MachineOperand*> localUses;
           std::set<unsigned> localDefs;
+          predMI->dump();
           getDefUses(predMI, &localDefs, &localUses);
 
           predDefs = Union(localDefs, prevDefRegs[predMI]);
@@ -222,24 +227,26 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
     else {
       // otherwise
       std::set<unsigned> localPrevDefs;
-      MachineBasicBlock::iterator miItr(mi);
-      --miItr;
-      getDefUses(miItr, &localPrevDefs, 0);
-      prevDefRegs[mi] = Union(prevDefRegs[miItr], localPrevDefs);
-      prevUseRegs[mi] = Union(prevUseRegs[miItr], uses);
+      MachineInstr *prevMI = getPrevMI(mi);
+      assert(prevMI && "previous machine instr can't be null!");
+      getDefUses(prevMI, &localPrevDefs, 0);
+      prevDefRegs[mi] = Union(prevDefRegs[prevMI], localPrevDefs);
+      prevUseRegs[mi] = Union(prevUseRegs[prevMI], uses);
     }
   }
 
   if (defs.empty())
     return;
+  std::set<MachineOperand *> &prevUses = prevUseRegs[mi];
+  unsigned i = 0;
   for (unsigned  defReg : defs) {
-    std::set<MachineOperand *> &prevUses = prevUseRegs[mi];
     for (MachineOperand *mo : prevUses) {
       if (mo->isReg() && mo->getReg() == defReg &&
           !prevDefRegs[mo->getParent()].count(mo->getReg())) {
-        antiDeps.emplace_back(mo, &mi->getOperand(0));
+        antiDeps.emplace_back(mo, &mi->getOperand(i));
       }
     }
+    ++i;
   }
 }
 
@@ -338,7 +345,6 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use) {
       allocSet[phy] = false;
 
   MachineInstr *mi = use->getParent();
-  MachineBasicBlock::instr_iterator pos(mi);
 
   LiveIntervalIdem *interval = new LiveIntervalIdem;
   auto to = li->getIndex(mi);
@@ -372,14 +378,8 @@ void RegisterRenaming::simplifyAntiDeps() {
     auto target = antiDeps[i];
     for (size_t j = i + 1; j < e; ++j) {
       auto pair = antiDeps[j];
-      if (!(pair.use->getParent() && pair.use->getParent()->getParent()) ||
-          !(pair.def->getParent() && pair.def->getParent()->getParent())) {
-        antiDeps[j] = antiDeps[e-1];
-        antiDeps.pop_back();
-        --j;
-        --e;
-        continue;
-      }
+      assert(pair.use->getParent() && pair.use->getParent()->getParent() &&
+          pair.def->getParent() && pair.def->getParent()->getParent());
 
       if (pair.use == target.use && pair.def != target.def &&
           pair.def->getReg() == target.def->getReg()) {
@@ -459,6 +459,13 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   regions = getAnalysisIfAvailable<MachineIdempotentRegions>();
   auto itr = regions->begin();
   auto end = regions->end();
+
+  // FIXME, Jianping Zeng commented on 9/12/2028.
+  // If we are not going to clear the antiDeps, there is an item
+  // remained produced by previous running of this pass.
+  // I don't know why???
+  antiDeps.clear();
+
   for (; itr != end; ++itr) {
     IdempotentRegion* region = *itr;
     auto mbb = region->mbb_begin();
@@ -481,10 +488,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   //         If it is, construct a pair of use-def reg pair.
   simplifyAntiDeps();
 
-  antiDepsList.insert(antiDepsList.end(), antiDeps.begin(), antiDeps.end());
-  while (!antiDepsList.empty()) {
-    AntiDepPair pair = antiDepsList.front();
-    antiDepsList.pop_front();
+  while (!antiDeps.empty()) {
+    AntiDepPair pair = antiDeps.back();
+    antiDeps.pop_back();
 
     if (shouldRename(pair)) {
       // Step#6: choose a physical register for renaming.
