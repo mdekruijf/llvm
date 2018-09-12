@@ -1,5 +1,6 @@
 #include <deque>
 #include "LiveIntervalAnalysisIdem.h"
+#include "DepthFirstUtil.h"
 
 using namespace llvm;
 
@@ -182,8 +183,10 @@ void LiveIntervalAnalysisIdem::numberMachineInstr(std::vector<MachineBasicBlock 
 
   idx2MI.clear();
   mi2Idx.clear();
-  idx2MI.resize(totalMIs);
-  unsigned index = 0;
+  idx2MI.resize(totalMIs+1);
+
+  // starts from 4 in the case of we will insert a interval before first instr.
+  unsigned index = NUM;
   for (auto mbb : sequence) {
     auto mi = mbb->instr_begin();
     auto end = mbb->instr_end();
@@ -297,9 +300,9 @@ void LiveIntervalAnalysisIdem::buildIntervals(
       for (unsigned moIdx = 0, sz = mi->getNumOperands(); moIdx < sz; ++moIdx) {
         MachineOperand &mo = mi->getOperand(moIdx);
         if (mo.isReg() && mo.getReg()) {
-          const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo.getReg());
-          allocatableRegs = tri->getAllocatableSet(*mf, rc);
-          // skip unallocatable register.
+          // const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo.getReg());
+          allocatableRegs = tri->getAllocatableSet(*mf);
+          // skip unallocable register.
           if (TargetRegisterInfo::isPhysicalRegister(mo.getReg()) &&
               !allocatableRegs[mo.getReg()])
             continue;
@@ -347,46 +350,13 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   mf = &MF;
   tri = MF.getTarget().getRegisterInfo();
   unsigned size = MF.getNumBlockIDs();
-  long *numIncomingBranches = new long[size];
   dt = getAnalysisIfAvailable<MachineDominatorTree>();
   loopInfo = getAnalysisIfAvailable<MachineLoopInfo>();
-
   assert(dt);
-  {
-    unsigned idx = 0;
-    for (MachineFunction::iterator itr = MF.begin(), end = MF.end();
-         itr != end; ++itr) {
-      long numPreds = std::distance(itr->pred_begin(), itr->pred_end());
-      for (auto predItr = itr->pred_begin(), predEnd = itr->pred_end();
-          predItr != predEnd; ++predItr) {
-        if (dt->dominates(&*itr, *predItr))
-          --numPreds;
-      }
-      numIncomingBranches[idx] = numPreds;
-      ++idx;
-    }
-  }
 
   // Step #1: compute block order.
   std::vector<MachineBasicBlock *> sequence;
-  std::deque<MachineBasicBlock *> worklist;
-  worklist.push_back(&MF.front());
-  while (!worklist.empty()) {
-    MachineBasicBlock *curMBB = worklist.front();
-    worklist.pop_front();
-    sequence.push_back(curMBB);
-
-    for (
-    auto itr = curMBB->pred_begin(), end = curMBB->pred_end();
-    itr != end; ++itr) {
-      auto succ = *itr;
-      --numIncomingBranches[succ->getNumber()];
-      if (!numIncomingBranches[succ->getNumber()])
-        worklist.push_back(succ);
-    }
-  }
-
-  delete[] numIncomingBranches;
+  computeReversePostOrder(MF, *dt, sequence);
 
   // Step#2: computes local data flow information.
   std::vector<std::set<unsigned> > liveGen(size);
