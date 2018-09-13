@@ -237,7 +237,7 @@ public:
   unsigned getIndexAtMBB(unsigned id) {
     return id / NUM;
   }
-  void addNewInterval(unsigned int reg, LiveIntervalIdem *pIdem);
+  void insertOrCreateInterval(unsigned int reg, LiveIntervalIdem *pIdem);
 
   void dump(std::vector<MachineBasicBlock *> &sequence);
 };

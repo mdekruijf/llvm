@@ -11,9 +11,13 @@ RangeIterator LiveRangeIdem::intersectsAt(LiveRangeIdem *r2) {
   RangeIterator itr1(this), itr2(r2), end(&llvm::LiveRangeIdem::EndMarker);
   while (true) {
     if (itr1->start < itr2->start) {
-      if (itr1->end <= itr2->start)
+      if (itr1->end <= itr2->start) {
         ++itr1;
-      return itr1 == end ? end : itr2;
+        if (itr1 == end)
+          return end;
+      }
+      else
+        return itr2;
     }
     else {
       if (itr1->start == itr2->start)
@@ -21,8 +25,11 @@ RangeIterator LiveRangeIdem::intersectsAt(LiveRangeIdem *r2) {
       // Otherwise, r1.start > r2.start <--> r2.start < r1.start
       if (itr2->end <= itr1->start) {
         ++itr2;
-        return itr2 == end ? end : itr1;
+        if (itr2 == end)
+          return end;
       }
+      else
+        return itr1;
     }
   }
 }
@@ -383,9 +390,21 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   return true;
 }
 
-void LiveIntervalAnalysisIdem::addNewInterval(unsigned int reg,
-                                              LiveIntervalIdem *pIdem) {
-  intervals.insert(std::pair<unsigned, LiveIntervalIdem*>(reg, pIdem));
+void LiveIntervalAnalysisIdem::insertOrCreateInterval(unsigned int reg,
+                                                      LiveIntervalIdem *pIdem) {
+  if (intervals.count(reg)) {
+    auto itr = pIdem->begin();
+    auto end = pIdem->end();
+    for (; itr != end; ++itr)
+      intervals[reg]->addRange(itr->start, itr->end);
+    // accumulate cost to be spilled.
+    intervals[reg]->costToSpill += pIdem->costToSpill;
+    // add use points to the interval.
+    intervals[reg]->usePoints.insert(pIdem->usepoint_begin(), pIdem->usepoint_end());
+  }
+  else {
+    intervals.insert(std::pair<unsigned, LiveIntervalIdem *>(reg, pIdem));
+  }
 }
 
 void LiveIntervalAnalysisIdem::weightLiveInterval() {

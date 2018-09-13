@@ -78,6 +78,7 @@ namespace {
 
     void simplifyAntiDeps();
 
+    void clearAntiDeps(MachineOperand *useMO);
     void insertMoveAndBoundary(AntiDepPair &pair);
 
     void insertBoundaryAsNeed(MachineInstr *&useMI,
@@ -88,7 +89,7 @@ namespace {
     std::map<MachineInstr*, std::set<unsigned>> prevDefRegs;
     // records all use registers of current mi and previous mi.
     std::map<MachineInstr*, std::set<MachineOperand*>> prevUseRegs;
-    std::vector<AntiDepPair> antiDeps;
+    std::deque<AntiDepPair> antiDeps;
     const TargetInstrInfo *tii;
     const TargetRegisterInfo *tri;
     const MachineFunction *mf;
@@ -320,15 +321,24 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
 
 bool RegisterRenaming::availableOnRegClass(unsigned physReg,
                                            const TargetRegisterClass &rc) {
-  return tri->getMinimalPhysRegClass(physReg)->hasSubClassEq(&rc) && !mri->isLiveIn(physReg);
+  return tri->getMinimalPhysRegClass(physReg)->hasSubClassEq(&rc) /*&& !mri->isLiveIn(physReg)*/;
 }
 
 unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
                                                  const TargetRegisterClass &rc,
                                                  BitVector &allocSet) {
+  llvm::errs()<<"Interval for move instr: ";
+  interval.dump(*const_cast<TargetRegisterInfo*>(tri));
+  llvm::errs()<<"\n";
+
   for (int physReg = allocSet.find_first(); physReg > 0; physReg = allocSet.find_next(physReg)) {
     if (li->intervals.count(physReg)) {
       LiveIntervalIdem *itrv = li->intervals[physReg];
+
+      llvm::errs()<<"Candidated interval: ";
+      itrv->dump(*const_cast<TargetRegisterInfo*>(tri));
+      llvm::errs()<<"\n";
+
       if (!itrv->intersects(&interval)) {
         // we only consider those live interval which doesn't interfere with current
         // interval.
@@ -355,21 +365,31 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
   // choose an interval to be evicted out memory, and insert spilling code as
   // appropriate.
   unsigned costMax = INT_MAX;
-  LiveIntervalIdem *targetInter = 0;
-  for (auto itr = li->interval_begin(), end = li->interval_end(); itr != end; ++itr) {
-    assert(interval.intersects(itr->second) &&
-        "should not have interval doesn't interfere with current interval");
+  LiveIntervalIdem *targetInter = nullptr;
+  for (auto physReg = allocSet.find_first(); physReg > 0;
+            physReg = allocSet.find_next(physReg)) {
+    if(!li->intervals.count(physReg))
+      continue;
+    auto phyItv = li->intervals[physReg];
+    assert(interval.intersects(phyItv) &&
+    "should not have interval doesn't interfere with current interval");
+    if (mri->isLiveIn(physReg))
+      continue;
 
-    unsigned reg = itr->second->reg;
-    if (mri->isLiveIn(reg)) continue;
-
-    if (itr->second->costToSpill < costMax) {
-      costMax = itr->second->costToSpill;
-      targetInter = itr->second;
+    if (phyItv->costToSpill < costMax) {
+      costMax = phyItv->costToSpill;
+      targetInter = phyItv;
     }
   }
+
   // no proper interval found to be spilled out.
   if (!targetInter) return 0;
+
+  llvm::errs()<<"Selected evicted physical register is: "
+  << tri->getName(targetInter->reg)<<"\n";
+  llvm::errs()<<"\nSelected evicted interval is: ";
+  targetInter->dump(*const_cast<TargetRegisterInfo*>(tri));
+
   spillOutInterval(targetInter);
   return targetInter->reg;
 }
@@ -389,15 +409,15 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
   // use will be assigned.
   allocSet[use->getReg()] = false;
 
+  // obtains a free register used for move instr.
   unsigned freeReg = tryChooseFreeRegister(*interval, *rc, allocSet);
-  if (freeReg) {
-    // obtains a free register used for move instr.
-    return freeReg;
+  if (!freeReg) {
+    freeReg = tryChooseBlockedRegister(*interval, *rc, allocSet);
   }
-  freeReg = tryChooseBlockedRegister(*interval, *rc, allocSet);
+
   assert(freeReg && "can not to rename the specified register!");
   interval->reg = freeReg;
-  li->addNewInterval(freeReg, interval);
+  li->insertOrCreateInterval(freeReg, interval);
   return freeReg;
 }
 
@@ -465,19 +485,38 @@ void RegisterRenaming::insertBoundaryAsNeed(MachineInstr *&useMI,
     useMI = &*itr;
 }
 
+void RegisterRenaming::clearAntiDeps(MachineOperand *useMO) {
+  auto itr = antiDeps.begin();
+  auto end = antiDeps.end();
+  while (itr != end) {
+    auto pair = *itr;
+    if (pair.use == useMO) {
+      // we find a anti-dep whose use is same as useMO.
+      antiDeps.erase(itr);
+    }
+    else
+      ++itr;
+  }
+}
+
 void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
   auto useMI = pair.use->getParent();
+
   LiveIntervalIdem *interval = new LiveIntervalIdem;
   auto to = li->getIndex(useMI);
   auto from = to - 2;
 
   interval->addRange(from, to);    // add an interval for a temporal move instr.
   unsigned phyReg = choosePhysRegForRenaming(pair.use, interval);
+
   assert(TargetRegisterInfo::isPhysicalRegister(phyReg));
   assert(phyReg != pair.use->getReg());
 
-  // Step#8: substitute the old reg with phyReg.
+  // Step#8: substitute the old reg with phyReg,
+  // and remove other anti-dep on this use.
   unsigned oldReg = pair.use->getReg();
+  clearAntiDeps(pair.use);
+
   pair.use->setReg(phyReg);
 
   MachineBasicBlock *parent = useMI->getParent();
@@ -541,17 +580,19 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   //         If it is, construct a pair of use-def reg pair.
   simplifyAntiDeps();
 
+  li->dump(sequence);
+
   for (auto pair : antiDeps) {
-    llvm::errs()<<"use:";
+    llvm::errs()<<"use:"<<li->mi2Idx[pair.use->getParent()];
     pair.use->getParent()->dump();
-    llvm::errs()<<"def:";
+    llvm::errs()<<"def:"<<li->mi2Idx[pair.def->getParent()];
     pair.def->getParent()->dump();
     llvm::errs()<<"\n";
   }
 
   while (!antiDeps.empty()) {
-    AntiDepPair pair = antiDeps.back();
-    antiDeps.pop_back();
+    auto pair = antiDeps.front();
+    antiDeps.pop_front();
 
     if (shouldRename(pair)) {
       // Step#6: choose a physical register for renaming.
@@ -561,6 +602,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       changed = true;
     }
   }
+  // TODO, removes some redundant idem instruction to reduce code size.
   removeRedundantIdem();
   return changed;
 }
