@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#define DEBUG_TYPE "reg-renaming"
+
 #include <llvm/PassSupport.h>
 #include <llvm/CodeGen/MachineIdempotentRegions.h>
 #include "llvm/CodeGen/Passes.h"
@@ -23,8 +25,6 @@
 #include <iterator>
 #include <deque>
 #include <utility>
-
-#define DEBUG_TYPE "reg-renaming"
 
 using namespace llvm;
 
@@ -153,11 +153,15 @@ DefUseOfMI* getOrCreateDefUse(MachineInstr *mi,
   return res;
 }
 
-static void getDefUses(MachineInstr *mi, std::set<unsigned> *defs, std::set<MachineOperand *> *uses) {
+static void getDefUses(MachineInstr *mi,
+    std::set<unsigned> *defs,
+    std::set<MachineOperand *> *uses,
+    BitVector allocaSets) {
   for (unsigned i = 0, e = mi->getNumOperands(); i < e; i++) {
     MachineOperand *mo = &mi->getOperand(i);
     if (!mo || !mo->isReg() ||
-        !mo->getReg() || mo->isImplicit()) continue;
+        !mo->getReg() || mo->isImplicit() ||
+        !allocaSets.test(mo->getReg())) continue;
 
     unsigned &&reg = mo->getReg();
     assert(TargetRegisterInfo::isPhysicalRegister(reg));
@@ -222,7 +226,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
   if (!mi) return;
   std::set<MachineOperand*> uses;
   std::set<unsigned> defs;
-  getDefUses(mi, &defs, &uses);
+  getDefUses(mi, &defs, &uses, tri->getAllocatableSet(*mf));
 
   if (regions->isRegionEntry(*mi)) {
     prevDefRegs[mi] = std::set<unsigned>();
@@ -251,7 +255,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
           std::set<MachineOperand*> localUses;
           std::set<unsigned> localDefs;
           predMI->dump();
-          getDefUses(predMI, &localDefs, &localUses);
+          getDefUses(predMI, &localDefs, &localUses, tri->getAllocatableSet(*mf));
 
           predDefs = Union(localDefs, prevDefRegs[predMI]);
           predUses = Union(localUses, prevUseRegs[predMI]);
@@ -265,7 +269,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       std::set<unsigned> localPrevDefs;
       MachineInstr *prevMI = getPrevMI(mi);
       assert(prevMI && "previous machine instr can't be null!");
-      getDefUses(prevMI, &localPrevDefs, 0);
+      getDefUses(prevMI, &localPrevDefs, 0, tri->getAllocatableSet(*mf));
       prevDefRegs[mi] = Union(prevDefRegs[prevMI], localPrevDefs);
       prevUseRegs[mi] = Union(prevUseRegs[prevMI], uses);
     }
@@ -281,9 +285,12 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       // the same idempotence region.
       if (!regionContains(Regions, mo->getParent()))
         continue;
-
       if (mo->isReg() && mo->getReg() == defReg &&
           !prevDefRegs[mo->getParent()].count(mo->getReg())) {
+
+        DEBUG(llvm::errs()<<"["<<li->mi2Idx[mi]<<", "<<
+                    li->mi2Idx[mo->getParent()]<<
+                    ", "<< tri->getName(defReg)<<"]\n";);
         antiDeps.emplace_back(mo, &mi->getOperand(i));
       }
     }
@@ -327,17 +334,17 @@ bool RegisterRenaming::availableOnRegClass(unsigned physReg,
 unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
                                                  const TargetRegisterClass &rc,
                                                  BitVector &allocSet) {
-  llvm::errs()<<"Interval for move instr: ";
+  DEBUG(llvm::errs()<<"Interval for move instr: ";
   interval.dump(*const_cast<TargetRegisterInfo*>(tri));
-  llvm::errs()<<"\n";
+  llvm::errs()<<"\n";);
 
   for (int physReg = allocSet.find_first(); physReg > 0; physReg = allocSet.find_next(physReg)) {
     if (li->intervals.count(physReg)) {
       LiveIntervalIdem *itrv = li->intervals[physReg];
 
-      llvm::errs()<<"Candidated interval: ";
+      DEBUG(llvm::errs()<<"Candidated interval: ";
       itrv->dump(*const_cast<TargetRegisterInfo*>(tri));
-      llvm::errs()<<"\n";
+      llvm::errs()<<"\n";);
 
       if (!itrv->intersects(&interval)) {
         // we only consider those live interval which doesn't interfere with current
@@ -401,7 +408,7 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
 
   // remove the defined register by use mi from allocable set.
   std::set<unsigned> defs;
-  getDefUses(use->getParent(), &defs, 0);
+  getDefUses(use->getParent(), &defs, 0, tri->getAllocatableSet(*mf));
   for (unsigned phy : defs)
       allocSet[phy] = false;
 
@@ -580,8 +587,8 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   //         If it is, construct a pair of use-def reg pair.
   simplifyAntiDeps();
 
+  DEBUG(
   li->dump(sequence);
-
   for (auto mbb : sequence) {
     auto mi = mbb->instr_begin();
     auto end = mbb->instr_end();
@@ -608,7 +615,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     llvm::errs()<<"def:"<<li->mi2Idx[pair.def->getParent()];
     pair.def->getParent()->dump();
     llvm::errs()<<"\n";
-  }
+  });
 
   while (!antiDeps.empty()) {
     auto pair = antiDeps.front();
