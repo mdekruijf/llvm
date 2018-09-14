@@ -582,6 +582,26 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
   li->dump(sequence);
 
+  for (auto mbb : sequence) {
+    auto mi = mbb->instr_begin();
+    auto end = mbb->instr_end();
+    for (; mi != end; ++mi) {
+      llvm::errs()<<li->mi2Idx[mi]<<"\n uses: ";
+      auto set = prevUseRegs[mi];
+      for (auto mo : set) {
+        llvm::errs()<<tri->getName(mo->getReg())<<", ";
+      }
+      llvm::errs()<<"\n";
+
+      auto defs = prevDefRegs[mi];
+      if (!defs.empty()) llvm::errs()<<"defs: ";
+      for (auto defReg : defs) {
+        llvm::errs()<<tri->getName(defReg)<<", ";
+      }
+      llvm::errs()<<"\n";
+    }
+  }
+
   for (auto pair : antiDeps) {
     llvm::errs()<<"use:"<<li->mi2Idx[pair.use->getParent()];
     pair.use->getParent()->dump();
