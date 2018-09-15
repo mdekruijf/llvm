@@ -117,6 +117,40 @@ FunctionPass* llvm::createRegisterRenamingPass() {
 
 //=== Implementation for class RegisterRenaming.  ====//
 
+/**
+ * Checks if the given element is contained in the range from first to end.
+ * @tparam _ForwardIterator
+ * @tparam _BinaryPredicate
+ * @param first
+ * @param end
+ * @param p
+ * @return
+ */
+template<class T, typename _BinaryPredicate>
+bool contain(std::set<T> &set, T mo, _BinaryPredicate p) {
+  auto itr = set.begin();
+  auto end = set.end();
+  for (; itr != end; ++itr)
+    if (p(*itr, mo))
+      return true;
+
+  return false;
+}
+
+template<class T, class _Binary_Predicate>
+static std::set<T> Union(std::set<T> &lhs, std::set<T> &rhs, _Binary_Predicate pred) {
+  std::set<T> res;
+  for (T t : lhs) {
+    if (!contain(res, t, pred))
+      res.insert(t);
+  }
+  for (T t : rhs) {
+    if (!contain(res, t, pred))
+      res.insert(t);
+  }
+  return res;
+}
+
 template <class T>
 static std::set<T> Union(std::set<T> &lhs, std::set<T> &rhs) {
   std::set<T> res;
@@ -222,25 +256,9 @@ bool regionContains(SmallVectorImpl<IdempotentRegion *> *Regions, MachineInstr *
   return false;
 }
 
-/**
- * Checks if the given element is contained in the range from first to end.
- * @tparam _ForwardIterator
- * @tparam _BinaryPredicate
- * @param first
- * @param end
- * @param p
- * @return
- */
-template<typename _BinaryPredicate>
-bool contain(std::set<MachineOperand*> &set, MachineOperand *mo, _BinaryPredicate p) {
-  auto itr = set.begin();
-  auto end = set.end();
-  for (; itr != end; ++itr)
-    if (p(*itr, *mo))
-      return true;
 
-  return false;
-}
+static bool predEq(const MachineOperand *o1, const MachineOperand *o2)
+{ return o1->getReg() == o2->getReg(); }
 
 void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
                                             SmallVectorImpl<IdempotentRegion *> *Regions) {
@@ -278,7 +296,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
           predMI->dump();
           getDefUses(predMI, &localDefs, &localUses, tri->getAllocatableSet(*mf));
 
-          predDefs = Union(localDefs, prevDefRegs[predMI]);
+          predDefs = Union(localDefs, prevDefRegs[predMI], predEq);
           predUses = Union(localUses, prevUseRegs[predMI]);
         }
 
@@ -291,7 +309,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       MachineInstr *prevMI = getPrevMI(mi);
       assert(prevMI && "previous machine instr can't be null!");
       getDefUses(prevMI, &localPrevDefs, 0, tri->getAllocatableSet(*mf));
-      prevDefRegs[mi] = Union(prevDefRegs[prevMI], localPrevDefs);
+      prevDefRegs[mi] = Union(prevDefRegs[prevMI], localPrevDefs, predEq);
       prevUseRegs[mi] = Union(prevUseRegs[prevMI], uses);
     }
   }
@@ -314,9 +332,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       if (!regionContains(Regions, mo->getParent()))
         continue;
       if (mo->isReg() && mo->getReg() == defMO->getReg() &&
-          !contain(prevDefRegs[mo->getParent()], mo,
-                 [&](MachineOperand o1, MachineOperand o2)
-                 { return o1.getReg() == o2.getReg(); })) {
+          !contain(prevDefRegs[mo->getParent()], mo, predEq)) {
 
         llvm::errs()<<"["<<li->mi2Idx[mi]<<", "<<
                     li->mi2Idx[mo->getParent()]<<
@@ -332,8 +348,7 @@ bool RegisterRenaming::shouldRename(AntiDepPair pair) {
   auto use = pair.use;
   MachineInstr *useMI = use->getParent();
   std::set<MachineOperand*> &defs = prevDefRegs[useMI];
-  return !contain(defs, use, [](MachineOperand));
-  return !defs.count(use->getReg());
+  return !contain(defs, use, predEq);
 }
 
 void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
@@ -617,7 +632,6 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   }
 
   bool changed = false;
-
 
   li->dump(sequence);
   for (auto mbb : sequence) {

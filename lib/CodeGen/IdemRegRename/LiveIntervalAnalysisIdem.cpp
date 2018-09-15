@@ -387,7 +387,6 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   // Dump some useful information for it to review the correctness
   // of this transformation.
   DEBUG(dump(sequence));
-  return true;
 }
 
 void LiveIntervalAnalysisIdem::insertOrCreateInterval(unsigned int reg,

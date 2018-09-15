@@ -7,7 +7,6 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
-#include "llvm/CodeGen/LiveVariables.h"
 #include <algorithm>
 #include <llvm/Support/Debug.h>
 #include <set>
@@ -203,7 +202,6 @@ public:
   }
 
   virtual void getAnalysisUsage(AnalysisUsage &AU) const override{
-    AU.addRequired<LiveVariables>();
     AU.addRequired<MachineDominatorTree>();
     AU.addRequired<MachineLoopInfo>();
     AU.setPreservesAll();
