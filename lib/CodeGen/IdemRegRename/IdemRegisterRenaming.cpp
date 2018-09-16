@@ -315,7 +315,6 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
   }
 
   //
-  // TODO 9/14/2018
   // unique the defs register operand by checking if it have same register.
   // (void)std::unique(defs->begin(), defs->end(),
   //                  [](MachineOperand* def1, MachineOperand* def2)
@@ -492,9 +491,6 @@ void RegisterRenaming::simplifyAntiDeps() {
       assert(pair.use->getParent() && pair.use->getParent()->getParent() &&
           pair.def->getParent() && pair.def->getParent()->getParent());
 
-      pair.def->getParent()->dump();
-      pair.use->getParent()->dump();
-
       assert(pair.use->isReg() && pair.def->isReg());
       if (pair.use == target.use && pair.def != target.def &&
           pair.def->getReg() == target.def->getReg()) {
@@ -633,6 +629,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
   bool changed = false;
 
+  DEBUG(
   li->dump(sequence);
   for (auto mbb : sequence) {
     auto mi = mbb->instr_begin();
@@ -660,11 +657,13 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     llvm::errs()<<"def:"<<li->mi2Idx[pair.def->getParent()];
     pair.def->getParent()->dump();
     llvm::errs()<<"\n";
-  }
+  });
 
   // Step#5: checks if we should rename the defined register according to usd-def,
   //         If it is, construct a pair of use-def reg pair.
   simplifyAntiDeps();
+
+  li->dump(sequence);
 
   while (!antiDeps.empty()) {
     auto pair = antiDeps.front();

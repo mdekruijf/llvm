@@ -32,8 +32,6 @@ public:
   LiveRangeIdem *next;
 
 public:
-  static LiveRangeIdem EndMarker;
-
   LiveRangeIdem(unsigned _defIdx, unsigned _killIdx, LiveRangeIdem * _next) :
       start(_defIdx), end(_killIdx), next(_next) {}
   bool contains(unsigned idx) {
@@ -68,7 +66,7 @@ class RangeIterator : public std::iterator<std::forward_iterator_tag, LiveRangeI
 private:
   LiveRangeIdem *cur;
 public:
-  RangeIterator(LiveRangeIdem *_first) : cur(_first) {}
+  explicit RangeIterator(LiveRangeIdem *_first) : cur(_first) {}
   RangeIterator() = default;
 
   RangeIterator &operator++() {
@@ -85,7 +83,7 @@ public:
   }
   bool operator !=(RangeIterator itr) { return !(*this == itr); }
   LiveRangeIdem *operator->() {
-    assert(cur != &llvm::LiveRangeIdem::EndMarker);
+    assert(cur);
     return cur;
   }
 };
@@ -101,8 +99,8 @@ public:
    */
   unsigned costToSpill;
 
-  LiveIntervalIdem() : reg(0), first(&LiveRangeIdem::EndMarker),
-                       last(&LiveRangeIdem::EndMarker),
+  LiveIntervalIdem() : reg(0), first(nullptr),
+                       last(nullptr),
                        usePoints(), costToSpill(0) {}
   ~LiveIntervalIdem();
 
@@ -142,10 +140,10 @@ private:
 public:
   friend class RangeIterator;
 
-  RangeIterator begin() { return {first}; }
-  RangeIterator end() { return {last}; }
+  RangeIterator begin() { return RangeIterator{first}; }
+  RangeIterator end() { return RangeIterator(); }
   const RangeIterator begin() const { return RangeIterator(first); }
-  const RangeIterator end() const { return RangeIterator(last); }
+  const RangeIterator end() const { return RangeIterator(); }
 };
 
 class LiveIntervalAnalysisIdem : public MachineFunctionPass {
@@ -182,7 +180,7 @@ private:
                             std::vector<std::set<unsigned> > &liveOuts,
                             std::vector<std::set<unsigned> > &liveGen,
                             std::vector<std::set<unsigned> > &liveKill);
-  void handleRegisterDef(unsigned reg, MachineOperand *mo, unsigned start);
+  void handleRegisterDef(unsigned reg, MachineOperand *mo, unsigned start, unsigned end);
   void buildIntervals(std::vector<MachineBasicBlock*> &sequence,
                       std::vector<std::set<unsigned> > &liveOuts);
   /**

@@ -4,11 +4,9 @@
 
 using namespace llvm;
 
-LiveRangeIdem LiveRangeIdem::EndMarker(INT32_MAX, INT32_MAX, 0);
-
 RangeIterator LiveRangeIdem::intersectsAt(LiveRangeIdem *r2) {
-  assert(r2 && r2 != &llvm::LiveRangeIdem::EndMarker);
-  RangeIterator itr1(this), itr2(r2), end(&llvm::LiveRangeIdem::EndMarker);
+  assert(r2);
+  RangeIterator itr1(this), itr2(r2), end(0);
   while (true) {
     if (itr1->start < itr2->start) {
       if (itr1->end <= itr2->start) {
@@ -47,17 +45,17 @@ LiveIntervalIdem::~LiveIntervalIdem() {
 
 void LiveIntervalIdem::addRange(unsigned from, unsigned to) {
   assert(from <= to && "Invalid range!");
-  if (first == &LiveRangeIdem::EndMarker || to < first->end)
+  if (first == nullptr || to < first->end)
     insertRangeBefore(from, to, first);
   else {
-    LiveRangeIdem *r = first;
-    while (r != &LiveRangeIdem::EndMarker) {
-      if (to >= r->end)
-        r = r->next;
+    LiveRangeIdem **r = &first;
+    while (*r != nullptr) {
+      if (to >= (*r)->end)
+        r = &(*r)->next;
       else
         break;
     }
-    insertRangeBefore(from, to, r);
+    insertRangeBefore(from, to, *r);
   }
 }
 
@@ -65,7 +63,7 @@ void LiveIntervalIdem::print(llvm::raw_ostream &OS, const TargetRegisterInfo &tr
   OS << (TargetRegisterInfo::isPhysicalRegister(reg) ?
          tri.getName(reg) : ("%vreg" + reg));
   LiveRangeIdem *r = first;
-  while (r && r != &LiveRangeIdem::EndMarker) {
+  while (r && r != nullptr) {
     r->dump();
     OS << ",";
     r = r->next;
@@ -87,7 +85,7 @@ bool LiveIntervalIdem::isLiveAt(unsigned pos) {
     return false;
 
   LiveRangeIdem *itr = first;
-  while (itr != &LiveRangeIdem::EndMarker) {
+  while (itr != nullptr) {
     if (itr->contains(pos))
       return true;
     itr = itr->next;
@@ -107,21 +105,20 @@ RangeIterator LiveIntervalIdem::intersectAt(LiveIntervalIdem *li) {
 }
 
 void LiveIntervalIdem::insertRangeBefore(unsigned from, unsigned to, LiveRangeIdem *&cur) {
-  assert(cur == &LiveRangeIdem::EndMarker || cur->end == INT32_MAX ||
-      (cur->next && to < cur->next->start && "Not inserting at begining of interval"));
-  assert(from <= cur->end && "Not inserting at begining of interval");
+  assert((cur == nullptr || to < cur->end) && "Not inserting at begining of interval");
+  if (!cur) {
+    //assert(!last);
+    //assert(cur == first && "current node should be the first!");
+    last = cur = new LiveRangeIdem(from, to, nullptr);
+    return;
+  }
   if (cur->start <= to) {
-    assert(cur != &LiveRangeIdem::EndMarker && "First range must not be EndMarker");
+    assert(cur != nullptr && "First range must not be EndMarker");
     cur->start = std::min(from, cur->start);
     cur->end = std::max(to, cur->end);
-  } else {
-    if (first == last) {
-      assert(cur == first && "current node should be the first!");
-      cur = new LiveRangeIdem(from, to, last);
-    }
-    else {
+  }
+  else {
       cur = new LiveRangeIdem(from, to, cur);
-    }
   }
 }
 
@@ -133,7 +130,7 @@ bool UsePoint::operator< (const UsePoint rhs) const{
   assert(mo->getParent() == rhsMO->getParent() && "must within same machine instr");
   MachineInstr *mi = rhsMO->getParent();
   int idx1 = -1, idx2 = -1;
-  for (int i = 0, e = mi->getNumOperands(); i < e; i++) {
+  for (size_t i = 0, e = mi->getNumOperands(); i < e; i++) {
     MachineOperand &MO = mi->getOperand(i);
     if (!mo->isReg() || !mo->getReg())
       continue;
@@ -258,7 +255,10 @@ void LiveIntervalAnalysisIdem::computeGlobalLiveSet(
   } while (changed);
 }
 
-void LiveIntervalAnalysisIdem::handleRegisterDef(unsigned reg, MachineOperand *mo, unsigned start) {
+void LiveIntervalAnalysisIdem::handleRegisterDef(unsigned reg,
+    MachineOperand *mo,
+    unsigned start,
+    unsigned end) {
   LiveIntervalIdem *&li = intervals[reg];
   if (!li) {
     li = new LiveIntervalIdem();
@@ -270,7 +270,10 @@ void LiveIntervalAnalysisIdem::handleRegisterDef(unsigned reg, MachineOperand *m
     li->addUsePoint(start, mo);
   } else {
     LiveRangeIdem *&lr = li->first;
-    lr->start = start;
+    if (!lr)
+      li->addRange(start, end);
+    else
+      lr->start = start;
     li->addUsePoint(start, mo);
   }
 }
@@ -323,15 +326,16 @@ void LiveIntervalAnalysisIdem::buildIntervals(
       // handle defined registers.
       for (MachineOperand *op : defs) {
         unsigned reg = op->getReg();
-        handleRegisterDef(reg, op, num);
+        handleRegisterDef(reg, op, num, blockTo);
         if (TargetRegisterInfo::isPhysicalRegister(reg)) {
           const unsigned *subregs = tri->getSubRegisters(reg);
           if (subregs)
             for (; *subregs; ++subregs)
               if (!mi->modifiesRegister(*subregs, tri))
-                handleRegisterDef(*subregs, op, num);
+                handleRegisterDef(*subregs, op, num, blockTo);
         }
       }
+
       // handle use registers.
       for (MachineOperand *op : uses) {
         unsigned reg = op->getReg();
@@ -381,12 +385,13 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
   // Step#5: build intervals.
   buildIntervals(sequence, liveOuts);
 
-  // Step#6: TODO compute spilling weight for each interval.
+  // Step#6:
   weightLiveInterval();
 
   // Dump some useful information for it to review the correctness
   // of this transformation.
   DEBUG(dump(sequence));
+  return false;
 }
 
 void LiveIntervalAnalysisIdem::insertOrCreateInterval(unsigned int reg,
