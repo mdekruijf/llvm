@@ -361,13 +361,23 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
     const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo->getReg());
     if (mo->isDef()) {
       frameIndex = mfi->CreateSpillStackObject(rc->getSize(), rc->getAlignment());
-      tii->storeRegToStackSlot(*mi->getParent(), getNextMI(mi),
+      auto st = getNextMI(mi);
+      tii->storeRegToStackSlot(*mi->getParent(), st,
           mo->getReg(), true, frameIndex, rc, tri);
       getNextMI(mi)->getOperand(0).setIsUndef(true);
+
+      // Inserts a boundary instruction immediately after the store to partition the
+      // region into two different parts for avoiding violating idempotence.
+      tii->emitIdemBoundary(*mi->getParent(), getNextMI(st));
+
     }
     else if (mo->isUse()) {
-       assert(frameIndex != INT_MIN);
+      assert(frameIndex != INT_MIN);
       tii->loadRegFromStackSlot(*mi->getParent(), mi, mo->getReg(), frameIndex, rc, tri);
+      // Inserts a boundary instruction immediately before the load to partition the
+      // region into two different parts for avoiding violating idempotence.
+      auto ld = getPrevMI(mi);
+      tii->emitIdemBoundary(*mi->getParent(), ld);
     }
   }
 }
@@ -424,10 +434,16 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
     if(!li->intervals.count(physReg))
       continue;
     auto phyItv = li->intervals[physReg];
-    assert(interval.intersects(phyItv) &&
-    "should not have interval doesn't interfere with current interval");
+
+    // TargetRegisterClass isn't compatible with each other.
+    if (!availableOnRegClass(phyItv->reg, rc))
+      continue;
+
     if (mri->isLiveIn(physReg))
       continue;
+
+    assert(interval.intersects(phyItv) &&
+    "should not have interval doesn't interfere with current interval");
 
     if (phyItv->costToSpill < costMax) {
       costMax = phyItv->costToSpill;
@@ -450,7 +466,12 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
 unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
                                                     LiveIntervalIdem *interval) {
   auto rc = tri->getMinimalPhysRegClass(use->getReg());
-  auto allocSet = tri->getAllocatableSet(*mf, rc);
+  auto allocSet = tri->getAllocatableSet(*mf);
+
+  DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
+    llvm::errs()<<tri->getName(i)<<" ";
+  }
+  llvm::errs()<<"\n";);
 
   // remove the defined register by use mi from allocable set.
   std::set<MachineOperand*> defs;
@@ -461,6 +482,11 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
   // also, we must make sure no the physical register same as
   // use will be assigned.
   allocSet[use->getReg()] = false;
+
+  DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
+    llvm::errs()<<tri->getName(i)<<" ";
+  }
+  llvm::errs()<<"\n";);
 
   // obtains a free register used for move instr.
   unsigned freeReg = tryChooseFreeRegister(*interval, *rc, allocSet);
@@ -578,6 +604,8 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
   // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
   //insertBoundaryAsNeed(useMI, phyReg);
   MachineBasicBlock *mbb = useMI->getParent();
+  // Inserts two boundary instruction to surround the move instr.
+  tii->emitIdemBoundary(*mbb, useMI);
   tii->emitIdemBoundary(*mbb, useMI);
   useMI = getPrevMI(useMI);
 
@@ -682,6 +710,32 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     }
   }
   // TODO, removes some redundant idem instruction to reduce code size.
+  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+  // Because we allow some generated code will invalidate the definition of idempotence
+  // in the current stage
+  //
+  // like following:
+  // 	IDEM
+  //	ADJCALLSTACKDOWN 0, pred:14, pred:%noreg, %SP<imp-def>, %SP<imp-use>
+  //	%R12<def> = LDRi12 <fi#-1>, 0, pred:14, pred:%noreg; mem:LD4[FixedStack-1]
+  //	%R4<def> = MOVr %R1<kill,undef>, pred:14, pred:%noreg, opt:%noreg
+  //	IDEM
+  //
+  //    **(In this region, it is not idempotent)**
+  //	%R0<def> = COPY %R4<kill>
+  //	%R4<def> = MOVr %R2<kill,undef>, pred:14, pred:%noreg, opt:%noreg
+  //	IDEM
+  //    **(In this region, it is not idempotent)**
+  //	%R1<def> = COPY %R4<kill>
+  //	%R4<def> = MOVr %R3<kill,undef>, pred:14, pred:%noreg, opt:%noreg
+  //	IDEM
+  //	%R2<def> = COPY %R4<kill>
+  //	%R3<def> = COPY %R12<kill>
+  //	BL <ga:@g>, %R0<kill>, %R1<kill>, %R2<kill>, %R3<kill>, %R0<imp-def>, %R1<imp-def,dead>, %R2<imp-def,dead>,
+  //                %R3<imp-def,dead>, %R12<imp-def,dead>, %SP<imp-use>, ...
+  //	ADJCALLSTACKUP 0, 0, pred:14, pred:%noreg, %SP<imp-def>, %SP<imp-use>
+  //	IDEM
+  //	MOVPCLR pred:14, pred:%noreg, %R0<imp-use,kill>
   removeRedundantIdem();
   return changed;
 }
