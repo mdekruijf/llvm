@@ -70,6 +70,13 @@ namespace {
       delete scavenger;
     }
   private:
+    template<bool IgnoreIdem = false>
+    void computeDefUseDataflow(MachineInstr *mi,
+                               std::set<MachineOperand*> &uses,
+                               SmallVectorImpl<IdempotentRegion *> *Regions,
+                               std::map<MachineInstr*, std::set<MachineOperand*>> &prevDefs,
+                               std::map<MachineInstr*, std::set<MachineOperand*>> &prevUses);
+
     void collectRefDefUseInfo(MachineInstr *mi, SmallVectorImpl<IdempotentRegion *> *Regions);
     bool shouldRename(AntiDepPair pair);
     unsigned choosePhysRegForRenaming(MachineOperand *use,
@@ -94,6 +101,10 @@ namespace {
                               unsigned defReg);
 
     bool handleMultiDepsWithinSameMI(AntiDepPair &pair);
+
+    bool scavengerIdem();
+
+    bool idemCanBeRemoved(MachineInstr *mi);
 
     // records all def registers by instr before current mi.
     std::map<MachineInstr*, std::set<MachineOperand*>> prevDefRegs;
@@ -204,7 +215,7 @@ DefUseOfMI* getOrCreateDefUse(MachineInstr *mi,
 
 static void getDefUses(MachineInstr *mi,
                        std::set<MachineOperand*> *defs,
-                       std::set<MachineOperand *> *uses,
+                       std::set<MachineOperand*> *uses,
                        const BitVector &allocaSets) {
   for (unsigned i = 0, e = mi->getNumOperands(); i < e; i++) {
     MachineOperand *mo = &mi->getOperand(i);
@@ -275,28 +286,36 @@ bool regionContains(SmallVectorImpl<IdempotentRegion *> *Regions, MachineInstr *
 static bool predEq(const MachineOperand *o1, const MachineOperand *o2)
 { return o1->getReg() == o2->getReg(); }
 
-void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
-                                            SmallVectorImpl<IdempotentRegion *> *Regions) {
-  if (!mi) return;
-  std::set<MachineOperand*> uses;
-  std::set<MachineOperand*> defs;
-  getDefUses(mi, &defs, &uses, allocaSet);
-
-  if (regions->isRegionEntry(*mi)) {
-    prevDefRegs[mi] = std::set<MachineOperand*>();
-    prevUseRegs[mi] = uses;
+/**
+ * This function will be used for computing the previous defs and uses for each MI.
+ * In the same time, template argument {@code IgnoreIdem} will determines if
+ * should we set the defs and uses set of idem as empty or as normal mi.
+ * @tparam IgnoreIdem
+ * @param mi
+ * @param prevDefs
+ * @param prevUses
+ */
+template<bool IgnoreIdem>
+void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
+                                             std::set<MachineOperand*> &uses,
+                                             SmallVectorImpl<IdempotentRegion *> *Regions,
+                                             std::map<MachineInstr*, std::set<MachineOperand*>> &prevDefs,
+                                             std::map<MachineInstr*, std::set<MachineOperand*>> &prevUses) {
+  if (regions->isRegionEntry(*mi) && !IgnoreIdem) {
+    prevDefs[mi] = std::set<MachineOperand*>();
+    prevUses[mi] = uses;
   }
   else {
     // if the mi is the first mi of basic block with preds.
     if (mi == &mi->getParent()->front()) {
       MachineBasicBlock *mbb = mi->getParent();
       if (mbb->pred_empty()) {
-        prevDefRegs[mi] = std::set<MachineOperand*>();
-        prevUseRegs[mi] = uses;
+        prevDefs[mi] = std::set<MachineOperand*>();
+        prevUses[mi] = uses;
       }
       else {
-        std::set<MachineOperand*> &predDefs = prevDefRegs[mi];
-        std::set<MachineOperand*> &predUses = prevUseRegs[mi];
+        std::set<MachineOperand*> &predDefs = prevDefs[mi];
+        std::set<MachineOperand*> &predUses = prevUses[mi];
 
         auto itr = mbb->pred_begin();
         auto end = mbb->pred_end();
@@ -311,7 +330,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
           predMI->dump();
           getDefUses(predMI, &localDefs, &localUses, allocaSet);
 
-          predDefs = Union(localDefs, prevDefRegs[predMI], predEq);
+          predDefs = Union(localDefs, prevDefs[predMI], predEq);
           predUses = Union(localUses, prevUseRegs[predMI]);
         }
 
@@ -324,10 +343,21 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       MachineInstr *prevMI = getPrevMI(mi);
       assert(prevMI && "previous machine instr can't be null!");
       getDefUses(prevMI, &localPrevDefs, 0, allocaSet);
-      prevDefRegs[mi] = Union(prevDefRegs[prevMI], localPrevDefs, predEq);
-      prevUseRegs[mi] = Union(prevUseRegs[prevMI], uses);
+
+      prevDefs[mi] = Union(prevDefs[prevMI], localPrevDefs, predEq);
+      prevUses[mi] = Union(prevUses[prevMI], uses);
     }
   }
+}
+
+void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
+                                            SmallVectorImpl<IdempotentRegion *> *Regions) {
+  if (!mi) return;
+  std::set<MachineOperand*> uses;
+  std::set<MachineOperand*> defs;
+  getDefUses(mi, &defs, &uses, allocaSet);
+
+  computeDefUseDataflow(mi, uses, Regions, prevDefRegs, prevUseRegs);
 
   //
   // unique the defs register operand by checking if it have same register.
@@ -338,7 +368,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
   if (defs.empty())
     return;
   std::set<MachineOperand *> &prevUses = prevUseRegs[mi];
-  unsigned i = 0;
+
   for (auto defMO : defs) {
     for (MachineOperand *mo : prevUses) {
       // we don't care those anti-dependence whose def and use are not  belong to
@@ -354,7 +384,6 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
         antiDeps.emplace_back(mo, defMO);
       }
     }
-    ++i;
   }
 }
 
@@ -708,6 +737,85 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
   return true;
 }
 
+bool RegisterRenaming::idemCanBeRemoved(MachineInstr *mi) {
+  assert(tii->isIdemBoundary(mi) && "Only allow to entry this function when mi is idem!");
+  const MachineBasicBlock &entryMBB = mf->front();
+  if (mi->getParent() == &entryMBB)
+    return true;
+
+  // Re-compute the prevDef and prevUse set for each instruction after mi.
+  // copy
+  std::map<MachineInstr*, std::set<MachineOperand*>> localPrevDefs = prevDefRegs;
+  std::map<MachineInstr*, std::set<MachineOperand*>> localPrevUses = prevUseRegs;
+
+  MachineBasicBlock::iterator itr = mi;
+  MachineBasicBlock::iterator end = mi->getParent()->end();
+
+  bool removable = true;
+  for (; itr != end && !tii->isIdemBoundary(itr); ++itr) {
+    std::set<MachineOperand *> defs;
+    std::set<MachineOperand *> uses;
+    getDefUses(itr, &defs, &uses, allocaSet);
+
+    SmallVectorImpl<IdempotentRegion *> Regions(10);
+    regions->getRegionsContaining(*itr, &Regions);
+    computeDefUseDataflow<true>(itr, uses, &Regions, localPrevDefs, localPrevUses);
+
+    // checks
+    auto prevDefs = localPrevDefs[itr];
+    if (prevDefs.empty())
+      continue;
+
+    auto prevUses = localPrevUses[itr];
+    for (auto defMO : defs) {
+      for (MachineOperand *useMO : prevUses) {
+        assert(useMO->isReg());
+        if (useMO->getReg() != defMO->getReg())
+          continue;
+
+        // We don't need to check whether is the useMI in the same region as
+        // defMI, because our algorithm ensures useMI and defIMI must are in
+        // the separate regions.
+        if (!contain(localPrevDefs[useMO->getParent()], useMO, predEq)) {
+            removable = false;
+            goto RETURN;
+        }
+      }
+    }
+  }
+
+  // If the idem instr can be erased, so update the global prevUses and prevDefs
+  // set.
+  prevUseRegs = localPrevUses;
+  prevDefRegs = localPrevDefs;
+
+  RETURN:
+  return removable;
+}
+
+bool RegisterRenaming::scavengerIdem() {
+
+  std::vector<MachineInstr*> removable;
+
+  bool  changed = false;
+  for (auto &mbb : *mf) {
+    if (mbb.empty())
+      continue;
+
+    for (auto &mi : mbb) {
+      if (tii->isIdemBoundary(&mi) && idemCanBeRemoved(const_cast<MachineInstr*>(&mi)))
+        removable.push_back(const_cast<MachineInstr*>(&mi));
+    }
+  }
+
+  if (!removable.empty()) {
+    changed = true;
+    for (MachineInstr* mi : removable)
+      mi->eraseFromParent();
+  }
+  return changed;
+}
+
 bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   mf = &MF;
   tii = MF.getTarget().getInstrInfo();
@@ -799,8 +907,10 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   }
   // TODO, removes some redundant idem instruction to reduce code size.
   // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-  if (!scavenger)
-    scavenger = new IdemInstrScavenger();
-  changed |= scavenger->runOnMachineFunction(MF);
+  //if (!scavenger)
+  //  scavenger = new IdemInstrScavenger();
+  //changed |= scavenger->runOnMachineFunction(MF);
+
+  changed |= scavengerIdem();
   return changed;
 }
