@@ -361,8 +361,9 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
     const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo->getReg());
     if (mo->isDef()) {
       frameIndex = mfi->CreateSpillStackObject(rc->getSize(), rc->getAlignment());
-      MachineBasicBlock::instr_iterator insertPos = mi;
-      tii->storeRegToStackSlot(*mi->getParent(), ++insertPos, mo->getReg(), true, frameIndex, rc, tri);
+      tii->storeRegToStackSlot(*mi->getParent(), getNextMI(mi),
+          mo->getReg(), true, frameIndex, rc, tri);
+      getNextMI(mi)->getOperand(0).setIsUndef(true);
     }
     else if (mo->isUse()) {
        assert(frameIndex != INT_MIN);
@@ -582,9 +583,12 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
 
   assert(tii->isIdemBoundary(useMI) && "the mi at inserted position must be a splitting boundary!");
   // Step#10: insert a move instruction before splitting boundary instr.
-  tii->copyPhysReg(*parent, useMI, DebugLoc(), phyReg, oldReg, false);
+  // This instruction would be the last killer of src reg in this copy instr.
+  tii->copyPhysReg(*parent, useMI, DebugLoc(), phyReg, oldReg, true);
 
-  DEBUG(pair.use->getParent()->getParent()->dump());
+  // annotate the undef flag to the src reg if src reg is liveIn.
+  auto copyMI = getPrevMI(useMI);
+  copyMI->getOperand(1).setIsUndef(true);
 }
 
 void RegisterRenaming::removeRedundantIdem() {
