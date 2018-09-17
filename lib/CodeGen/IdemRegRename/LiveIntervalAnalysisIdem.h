@@ -19,7 +19,7 @@ enum {
   USE,
   DEF,
   STORE,
-  NUM
+  NUM = 8
 };
 
 // forward declaration.

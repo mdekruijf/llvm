@@ -4,9 +4,10 @@
 
 #include <deque>
 #include <vector>
-#include "DepthFirstUtil.h"
+#include "IdemUtil.h"
 
 using namespace std;
+using namespace llvm;
 
 void llvm::computeReversePostOrder(MachineFunction &MF,
                              MachineDominatorTree &dt,
@@ -47,3 +48,6 @@ void llvm::computeReversePostOrder(MachineFunction &MF,
 
   delete[] numIncomingBranches;
 }
+
+char llvm::IdemInstrScavenger::ID = 0;
+

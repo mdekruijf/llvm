@@ -19,7 +19,7 @@
 #include "LiveIntervalAnalysisIdem.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/Target/TargetData.h"
-#include "DepthFirstUtil.h"
+#include "IdemUtil.h"
 
 #include <algorithm>
 #include <iterator>
@@ -35,6 +35,14 @@ namespace {
     MachineOperand *use;
     MachineOperand *def;
     AntiDepPair(MachineOperand *_use, MachineOperand *_def) : use(_use), def(_def) {}
+
+    bool operator == (AntiDepPair rhs) {
+      return use == rhs.use && def == rhs.def;
+    }
+
+    bool operator != (AntiDepPair rhs) {
+      return !(*this == rhs);
+    }
   };
 
   class RegisterRenaming : public MachineFunctionPass {
@@ -59,6 +67,7 @@ namespace {
       prevDefRegs.clear();
       prevUseRegs.clear();
       antiDeps.clear();
+      delete scavenger;
     }
   private:
     void collectRefDefUseInfo(MachineInstr *mi, SmallVectorImpl<IdempotentRegion *> *Regions);
@@ -83,7 +92,8 @@ namespace {
 
     void insertBoundaryAsNeed(MachineInstr *&useMI,
                               unsigned defReg);
-    void removeRedundantIdem();
+
+    bool handleMultiDepsWithinSameMI(AntiDepPair &pair);
 
     // records all def registers by instr before current mi.
     std::map<MachineInstr*, std::set<MachineOperand*>> prevDefRegs;
@@ -98,6 +108,11 @@ namespace {
     MachineRegisterInfo *mri;
     const TargetData *td;
     MachineIdempotentRegions *regions;
+    BitVector allocaSet;
+    /**
+     * Used for cleaning some redundant idem call instruction after register renaming.
+     */
+    IdemInstrScavenger *scavenger;
   };
 }
 
@@ -265,7 +280,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
   if (!mi) return;
   std::set<MachineOperand*> uses;
   std::set<MachineOperand*> defs;
-  getDefUses(mi, &defs, &uses, tri->getAllocatableSet(*mf));
+  getDefUses(mi, &defs, &uses, allocaSet);
 
   if (regions->isRegionEntry(*mi)) {
     prevDefRegs[mi] = std::set<MachineOperand*>();
@@ -294,7 +309,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
           std::set<MachineOperand*> localUses;
           std::set<MachineOperand*> localDefs;
           predMI->dump();
-          getDefUses(predMI, &localDefs, &localUses, tri->getAllocatableSet(*mf));
+          getDefUses(predMI, &localDefs, &localUses, allocaSet);
 
           predDefs = Union(localDefs, prevDefRegs[predMI], predEq);
           predUses = Union(localUses, prevUseRegs[predMI]);
@@ -308,7 +323,7 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
       std::set<MachineOperand*> localPrevDefs;
       MachineInstr *prevMI = getPrevMI(mi);
       assert(prevMI && "previous machine instr can't be null!");
-      getDefUses(prevMI, &localPrevDefs, 0, tri->getAllocatableSet(*mf));
+      getDefUses(prevMI, &localPrevDefs, 0, allocaSet);
       prevDefRegs[mi] = Union(prevDefRegs[prevMI], localPrevDefs, predEq);
       prevUseRegs[mi] = Union(prevUseRegs[prevMI], uses);
     }
@@ -619,8 +634,78 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
   copyMI->getOperand(1).setIsUndef(true);
 }
 
-void RegisterRenaming::removeRedundantIdem() {
-  // TODO
+bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
+  if (pair.use->getParent() != pair.def->getParent())
+    return false;
+
+  auto mi = pair.use->getParent();
+  std::set<MachineOperand*> defs;
+  std::set<MachineOperand*> uses;
+  getDefUses(mi, &defs, &uses, allocaSet);
+
+  // Collects all anti-dependences within the same mi.
+  std::vector<AntiDepPair> list;
+  for (auto &defMO : defs) {
+    for (auto &useMO : uses) {
+      if (predEq(defMO, useMO))
+        list.emplace_back(AntiDepPair(useMO, defMO));
+    }
+  }
+  // If there is not multiple anti-dependences within the same mi, use other function
+  // to handle this case.
+  if (list.size() <= 1)
+    return false;
+
+  auto itr = antiDeps.begin();
+  auto end = antiDeps.end();
+  for (; itr != end; ++itr) {
+    if (std::count(list.begin(), list.end(), *itr) > 0) {
+      antiDeps.erase(itr);
+      --itr;
+    }
+  }
+
+  // Inserts some move instr right before use MI and surrounds it with splitting boundary.
+  assert(list.size() <= NUM - 2 && "Can't handle too many anti-dependences within the same MI!");
+  MachineBasicBlock *parent = mi->getParent();
+
+  // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
+  //insertBoundaryAsNeed(useMI, phyReg);
+  MachineBasicBlock *mbb = mi->getParent();
+  // Inserts two boundary instruction to surround the move instr.
+  tii->emitIdemBoundary(*mbb, mi);
+  tii->emitIdemBoundary(*mbb, mi);
+  auto boundary = getPrevMI(mi);
+
+  // the end index of last copy instr to be inserted.
+  unsigned to = li->mi2Idx[mi];
+  for (auto &pair : list) {
+    LiveIntervalIdem *interval = new LiveIntervalIdem;
+    auto from = to - 1;
+
+    interval->addRange(from, to);    // add an interval for a temporal move instr.
+    unsigned phyReg = choosePhysRegForRenaming(pair.use, interval);
+
+    assert(TargetRegisterInfo::isPhysicalRegister(phyReg));
+    assert(phyReg != pair.use->getReg());
+
+    // Step#8: substitute the old reg with phyReg,
+    // and remove other anti-dep on this use.
+    unsigned oldReg = pair.use->getReg();
+    clearAntiDeps(pair.use);
+    pair.use->setReg(phyReg);
+
+    assert(tii->isIdemBoundary(boundary) && "the mi at inserted position must be a splitting boundary!");
+    // Step#10: insert a move instruction before splitting boundary instr.
+    // This instruction would be the last killer of src reg in this copy instr.
+    tii->copyPhysReg(*parent, boundary, DebugLoc(), phyReg, oldReg, true);
+
+    // annotate the undef flag to the src reg if src reg is liveIn.
+    auto copyMI = getPrevMI(boundary);
+    copyMI->getOperand(1).setIsUndef(true);
+  }
+
+  return true;
 }
 
 bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
@@ -631,6 +716,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   mfi = MF.getFrameInfo();
   mri = &MF.getRegInfo();
   td = MF.getTarget().getTargetData();
+  allocaSet = tri->getAllocatableSet(*mf);
 
   // Step#1: Collects regions
   regions = getAnalysisIfAvailable<MachineIdempotentRegions>();
@@ -705,37 +791,16 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       // Step#6: choose a physical register for renaming.
       // Step#7: if there is no free physical register, using heuristic method to
       //         spill out a interval.
-      insertMoveAndBoundary(pair);
+      if (!handleMultiDepsWithinSameMI(pair))
+        insertMoveAndBoundary(pair);
+
       changed = true;
     }
   }
   // TODO, removes some redundant idem instruction to reduce code size.
   // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-  // Because we allow some generated code will invalidate the definition of idempotence
-  // in the current stage
-  //
-  // like following:
-  // 	IDEM
-  //	ADJCALLSTACKDOWN 0, pred:14, pred:%noreg, %SP<imp-def>, %SP<imp-use>
-  //	%R12<def> = LDRi12 <fi#-1>, 0, pred:14, pred:%noreg; mem:LD4[FixedStack-1]
-  //	%R4<def> = MOVr %R1<kill,undef>, pred:14, pred:%noreg, opt:%noreg
-  //	IDEM
-  //
-  //    **(In this region, it is not idempotent)**
-  //	%R0<def> = COPY %R4<kill>
-  //	%R4<def> = MOVr %R2<kill,undef>, pred:14, pred:%noreg, opt:%noreg
-  //	IDEM
-  //    **(In this region, it is not idempotent)**
-  //	%R1<def> = COPY %R4<kill>
-  //	%R4<def> = MOVr %R3<kill,undef>, pred:14, pred:%noreg, opt:%noreg
-  //	IDEM
-  //	%R2<def> = COPY %R4<kill>
-  //	%R3<def> = COPY %R12<kill>
-  //	BL <ga:@g>, %R0<kill>, %R1<kill>, %R2<kill>, %R3<kill>, %R0<imp-def>, %R1<imp-def,dead>, %R2<imp-def,dead>,
-  //                %R3<imp-def,dead>, %R12<imp-def,dead>, %SP<imp-use>, ...
-  //	ADJCALLSTACKUP 0, 0, pred:14, pred:%noreg, %SP<imp-def>, %SP<imp-use>
-  //	IDEM
-  //	MOVPCLR pred:14, pred:%noreg, %R0<imp-use,kill>
-  removeRedundantIdem();
+  if (!scavenger)
+    scavenger = new IdemInstrScavenger();
+  changed |= scavenger->runOnMachineFunction(MF);
   return changed;
 }

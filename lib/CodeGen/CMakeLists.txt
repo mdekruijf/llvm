@@ -115,7 +115,7 @@ add_llvm_library(LLVMCodeGen
   # Our implementation for idempotence
   IdemRegRename/IdemRegisterRenaming.cpp
   IdemRegRename/LiveIntervalAnalysisIdem.cpp
-  IdemRegRename/DepthFirstUtil.cpp
+  IdemRegRename/IdemUtil.cpp
   )
 
 add_subdirectory(SelectionDAG)

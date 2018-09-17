@@ -1,6 +1,6 @@
 #include <deque>
 #include "LiveIntervalAnalysisIdem.h"
-#include "DepthFirstUtil.h"
+#include "IdemUtil.h"
 
 using namespace llvm;
 
