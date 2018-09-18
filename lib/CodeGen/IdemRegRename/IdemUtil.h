@@ -11,6 +11,13 @@ namespace llvm {
 void computeReversePostOrder(MachineFunction &MF,
                              MachineDominatorTree &dt,
                              std::vector<MachineBasicBlock *> &sequence);
+/**
+ * Checks if it is reachable from MI A to B. Return true if it reaches.
+ * @param A
+ * @param B
+ * @return
+ */
+bool reachable(MachineInstr *A, MachineInstr *B);
 
 /**
  * Used for cleaning some redundant idem call instruction after register renaming.

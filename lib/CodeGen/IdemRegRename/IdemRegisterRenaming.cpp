@@ -67,7 +67,8 @@ namespace {
       prevDefRegs.clear();
       prevUseRegs.clear();
       antiDeps.clear();
-      delete scavenger;
+      delete regions;
+      //delete scavenger;
     }
   private:
     template<bool IgnoreIdem = false>
@@ -95,10 +96,22 @@ namespace {
     void simplifyAntiDeps();
 
     void clearAntiDeps(MachineOperand *useMO);
+
     void insertMoveAndBoundary(AntiDepPair &pair);
 
-    void insertBoundaryAsNeed(MachineInstr *&useMI,
-                              unsigned defReg);
+    void getCandidatePosForBoundaryInsert(MachineInstr *startPos,
+                                          std::vector<MachineInstr*> &candidates,
+                                          std::set<MachineBasicBlock*> &visited);
+
+    void computeDistance(MachineInstr *startPos,
+                         std::vector<MachineInstr*> &candidates,
+                         std::map<MachineInstr*, unsigned> &dists,
+                         unsigned distance,
+                         std::set<MachineBasicBlock*> &visited);
+
+    void computeOptimizedInsertion(MachineInstr *startPos,
+                                            std::vector<MachineInstr*> &candidates,
+                                            std::vector<MachineInstr*> &InsertedPos);
 
     bool handleMultiDepsWithinSameMI(AntiDepPair &pair);
 
@@ -124,6 +137,7 @@ namespace {
      * Used for cleaning some redundant idem call instruction after register renaming.
      */
     IdemInstrScavenger *scavenger;
+    MachineDominatorTree *dt;
   };
 }
 
@@ -283,7 +297,7 @@ bool regionContains(SmallVectorImpl<IdempotentRegion *> *Regions, MachineInstr *
 }
 
 
-static bool predEq(const MachineOperand *o1, const MachineOperand *o2)
+inline static bool predEq(const MachineOperand *o1, const MachineOperand *o2)
 { return o1->getReg() == o2->getReg(); }
 
 /**
@@ -395,7 +409,6 @@ bool RegisterRenaming::shouldRename(AntiDepPair pair) {
 }
 
 void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
-  /// FIXME, I don't  know whether spilling code in here will arise no idempotence
   int frameIndex = INT_MIN;
   for (auto itr = interval->usepoint_begin(), end = interval->usepoint_end();
       itr != end; ++itr) {
@@ -409,11 +422,6 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
       tii->storeRegToStackSlot(*mi->getParent(), st,
           mo->getReg(), true, frameIndex, rc, tri);
       getNextMI(mi)->getOperand(0).setIsUndef(true);
-
-      // Inserts a boundary instruction immediately after the store to partition the
-      // region into two different parts for avoiding violating idempotence.
-      tii->emitIdemBoundary(*mi->getParent(), getNextMI(st));
-
     }
     else if (mo->isUse()) {
       assert(frameIndex != INT_MIN);
@@ -454,7 +462,6 @@ unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
         if (!availableOnRegClass(physReg, rc))
           continue;
 
-        //FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
         return physReg;
       }
     }
@@ -575,6 +582,7 @@ void RegisterRenaming::simplifyAntiDeps() {
   }
 }
 
+#if 0
 void RegisterRenaming::insertBoundaryAsNeed(MachineInstr *&useMI,
                                             unsigned defReg) {
   MachineBasicBlock *mbb = useMI->getParent();
@@ -608,6 +616,8 @@ void RegisterRenaming::insertBoundaryAsNeed(MachineInstr *&useMI,
   else
     useMI = &*itr;
 }
+
+#endif
 
 void RegisterRenaming::clearAntiDeps(MachineOperand *useMO) {
   auto itr = antiDeps.begin();
@@ -643,24 +653,158 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
 
   pair.use->setReg(phyReg);
 
-  MachineBasicBlock *parent = useMI->getParent();
-
   // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
   //insertBoundaryAsNeed(useMI, phyReg);
-  MachineBasicBlock *mbb = useMI->getParent();
-  // Inserts two boundary instruction to surround the move instr.
-  tii->emitIdemBoundary(*mbb, useMI);
-  tii->emitIdemBoundary(*mbb, useMI);
-  useMI = getPrevMI(useMI);
+  MachineBasicBlock *mbb = 0;
 
-  assert(tii->isIdemBoundary(useMI) && "the mi at inserted position must be a splitting boundary!");
-  // Step#10: insert a move instruction before splitting boundary instr.
-  // This instruction would be the last killer of src reg in this copy instr.
-  tii->copyPhysReg(*parent, useMI, DebugLoc(), phyReg, oldReg, true);
+  std::vector<MachineInstr*> candidateInsertPos;
+  std::set<MachineBasicBlock*> visited;
+  getCandidatePosForBoundaryInsert(useMI, candidateInsertPos, visited);
 
-  // annotate the undef flag to the src reg if src reg is liveIn.
-  auto copyMI = getPrevMI(useMI);
-  copyMI->getOperand(1).setIsUndef(true);
+  std::vector<MachineInstr *> optInsertedPos;
+  computeOptimizedInsertion(useMI, candidateInsertPos, optInsertedPos);
+
+
+  for (auto pos : optInsertedPos) {
+    assert(pos && pos->getParent() &&
+    pos->getParent()->getParent() == mf);
+
+    mbb = pos->getParent();
+    // Inserts two boundary instruction to surround the move instr.
+    tii->emitIdemBoundary(*mbb, pos);
+    tii->emitIdemBoundary(*mbb, pos);
+    pos = getPrevMI(pos);
+
+    assert(tii->isIdemBoundary(pos) && "the mi at inserted position must be a splitting boundary!");
+
+    // Step#10: insert a move instruction before splitting boundary instr.
+    // This instruction would be the last killer of src reg in this copy instr.
+    tii->copyPhysReg(*mbb, pos, DebugLoc(), phyReg, oldReg, true);
+
+    // annotate the undef flag to the src reg if src reg is liveIn.
+    auto copyMI = getPrevMI(pos);
+    copyMI->getOperand(1).setIsUndef(true);
+
+    // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
+  }
+}
+
+void RegisterRenaming::getCandidatePosForBoundaryInsert(MachineInstr *startPos,
+                                                        std::vector<MachineInstr*> &candidates,
+                                                        std::set<MachineBasicBlock*> &visited) {
+  assert(startPos && startPos->getParent());
+  MachineBasicBlock::iterator itr = startPos;
+  auto mbb = startPos->getParent();
+
+  if (!visited.count(mbb))
+    return;
+
+  auto end = startPos->getParent()->end();
+  for (++itr; itr != end && !tii->isIdemBoundary(itr); ++itr) {
+    std::set<MachineOperand*> defs;
+    SmallVectorImpl<IdempotentRegion *> Regions(20);
+    regions->getRegionsContaining(*itr, &Regions);
+
+    getDefUses(itr, &defs, 0, allocaSet);
+    auto prevUses = prevUseRegs[itr];
+    for (auto defMO : defs) {
+      for (MachineOperand* useMO : prevUses) {
+        if (!predEq(defMO, useMO))
+          continue;
+
+        if (!regionContains(&Regions, useMO->getParent()))
+          continue;
+        for (auto redefReg : prevDefRegs[useMO->getParent()]) {
+          if (regionContains(&Regions, useMO->getParent()) &&
+                    predEq(redefReg, useMO))
+            candidates.push_back(redefReg->getParent());
+        }
+      }
+    }
+  }
+
+  // handle successor blocks.
+  if (itr == end) {
+
+    std::for_each(mbb->succ_begin(), mbb->succ_end(), [&](MachineBasicBlock *succ)
+    {
+      return getCandidatePosForBoundaryInsert(succ->begin(), candidates, visited);
+    });
+  }
+}
+
+void RegisterRenaming::computeDistance(MachineInstr *startPos,
+                     std::vector<MachineInstr*> &candidates,
+                     std::map<MachineInstr*, unsigned> &dists,
+                     unsigned distance,
+                     std::set<MachineBasicBlock*> &visited) {
+  assert(startPos && startPos->getParent());
+  auto mbb = startPos->getParent();
+
+  if (!visited.count(mbb))
+    return;
+
+  auto mbbEnd = mbb->rend();
+  MachineBasicBlock::reverse_iterator mi(startPos);
+
+  for (++mi; mi != mbbEnd && !tii->isIdemBoundary(&*mi); ++mi, ++distance) {
+    if (std::find(candidates.begin(), candidates.end(), &*mi) == candidates.end())
+      continue;
+
+    dists[&*mi] = distance;
+  }
+
+  if (mi == mbbEnd) {
+    std::for_each(mbb->pred_begin(), mbb->pred_end(), [&](MachineBasicBlock *pred)
+    { return computeDistance(&*pred->rbegin(), candidates, dists, distance, visited); });
+  }
+}
+
+
+void RegisterRenaming::computeOptimizedInsertion(MachineInstr *startPos,
+                               std::vector<MachineInstr*> &candidates,
+                               std::vector<MachineInstr*> &InsertedPos) {
+  assert(startPos && startPos->getParent());
+
+  auto itr = candidates.begin();
+  auto end = candidates.end();
+
+  // removes those machine instr after startPos. Because needed candidate should
+  // be prior to startPos, so just ignore it!
+  for (; itr != end; ++itr)
+    if (llvm::reachable(startPos, *itr) || !llvm::reachable(*itr, startPos))
+    {
+      candidates.erase(itr);
+      --itr;
+    }
+
+  // As we reach here, all MI in candidates should encounter startPos when
+  // advance forward along with CFG edge.
+
+
+  std::map<MachineInstr*, unsigned> dists;
+  std::set<MachineBasicBlock*> visited;
+  computeDistance(startPos, candidates, dists, 1, visited);
+
+  std::vector<std::pair<MachineInstr*, unsigned> > tmp;
+  for (std::pair<MachineInstr*, unsigned> pair : dists) {
+    tmp.emplace_back(pair.first, pair.second);
+  }
+
+  std::sort(tmp.begin(), tmp.end(), [](std::pair<MachineInstr*, unsigned> o1,
+      std::pair<MachineInstr*, unsigned> o2) { return o1.second > o2.second; });
+
+  unsigned max = 0;
+  for (std::pair<MachineInstr*, unsigned> pair : tmp) {
+    if (InsertedPos.empty()) {
+      InsertedPos.push_back(pair.first);
+      max = pair.second;
+    }
+    else if (pair.second == max)
+      InsertedPos.push_back(pair.first);
+    else
+      break;
+  }
 }
 
 bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
@@ -835,7 +979,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   // I don't know why???
   antiDeps.clear();
 
-  auto dt = getAnalysisIfAvailable<MachineDominatorTree>();
+  dt = getAnalysisIfAvailable<MachineDominatorTree>();
   assert(dt);
 
   std::vector<MachineBasicBlock *> sequence;
@@ -905,12 +1049,39 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       changed = true;
     }
   }
-  // TODO, removes some redundant idem instruction to reduce code size.
-  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+
+
   //if (!scavenger)
   //  scavenger = new IdemInstrScavenger();
   //changed |= scavenger->runOnMachineFunction(MF);
+  MF.dump();
 
+
+  // Recompute the def-use regs dataflow equation.
+  //delete li;
+  //li = new LiveIntervalAnalysisIdem();
+  li->runOnMachineFunction(MF);
+  delete regions;
+  regions = new MachineIdempotentRegions();
+  regions->runOnMachineFunction(MF);
+  for (auto &mbb : sequence) {
+    auto mi = mbb->instr_begin();
+    auto mie = mbb->instr_end();
+    for (; mi != mie; ++mi) {
+      // Step#3: collects reg definition information.
+      // Step#4: collects reg uses information.
+      SmallVectorImpl<IdempotentRegion *> Regions(10);
+      regions->getRegionsContaining(*mi, &Regions);
+      collectRefDefUseInfo(mi, &Regions);
+    }
+  }
+
+  //FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
+  if (!antiDeps.empty()) {
+    li->dump(sequence);
+    assert(false && "Anti-dependences exist!");
+  }
+  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
   changed |= scavengerIdem();
   return changed;
 }
