@@ -36,9 +36,7 @@ void llvm::computeReversePostOrder(MachineFunction &MF,
     worklist.pop_front();
     sequence.push_back(curMBB);
 
-    for (
-        auto itr = curMBB->pred_begin(), end = curMBB->pred_end();
-        itr != end; ++itr) {
+    for (auto itr = curMBB->succ_begin(), end = curMBB->succ_end(); itr != end; ++itr) {
       auto succ = *itr;
       --numIncomingBranches[succ->getNumber()];
       if (!numIncomingBranches[succ->getNumber()])
