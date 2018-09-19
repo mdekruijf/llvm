@@ -53,6 +53,8 @@ bool llvm::reachable(MachineInstr *A, MachineInstr *B) {
   if (!A->getParent() || !B->getParent())
     return false;
 
+  if (A == B) return true;
+
   if (A->getParent() == B->getParent()) {
     for (MachineInstr &mi : *A->getParent()) {
       if (&mi == A)
