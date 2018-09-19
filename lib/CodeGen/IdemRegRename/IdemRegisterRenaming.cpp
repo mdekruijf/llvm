@@ -35,6 +35,12 @@ namespace {
   struct AntiDepPair {
     MachineOperand *use;
     MachineOperand *def;
+
+    // like R0 = R0 + R0
+    // the first pair is <def R0, first use R0>
+    // second pair(only second R0) will stores in useInSameMI.
+    std::vector<MachineOperand*> usesInSameMI;
+
     AntiDepPair(MachineOperand *_use, MachineOperand *_def) : use(_use), def(_def) {}
 
     bool operator == (AntiDepPair rhs) {
@@ -91,6 +97,7 @@ namespace {
     inline void addAntiDeps(MachineOperand *useMO, MachineOperand *defMO);
     void collectRefDefUseInfo(MachineInstr *mi, SmallVectorImpl<IdempotentRegion *> *Regions);
     bool shouldRename(AntiDepPair pair);
+    void filterUnavailableRegs(MachineOperand* use, BitVector &allocSet);
     unsigned choosePhysRegForRenaming(MachineOperand *use,
                                       LiveIntervalIdem *interval);
     unsigned tryChooseFreeRegister(LiveIntervalIdem &interval,
@@ -131,6 +138,7 @@ namespace {
                                             std::vector<MachineInstr*> &InsertedPos);
 
     bool handleMultiDepsWithinSameMI(AntiDepPair &pair);
+    bool handleMultiUseOneDefWithinSameMI(AntiDepPair &pair);
 
     bool scavengerIdem();
 
@@ -396,7 +404,7 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       // otherwise
       std::set<MachineOperand*> localPrevDefs;
       MachineInstr *prevMI = getPrevMI(mi);
-      prevMI->dump();
+//      prevMI->dump();
 
       assert(prevMI && "previous machine instr can't be null!");
       getDefUses(prevMI, &localPrevDefs, 0, allocaSet);
@@ -404,12 +412,12 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       prevDefs[mi] = Union(prevDefs[prevMI], localPrevDefs, predEq);
       prevUses[mi] = Union(prevUses[prevMI], uses);
 
-      for (auto def : prevDefs[mi])
-        llvm::errs()<<tri->getName(def->getReg())<<" ";
-      llvm::errs()<<"\n";
-      for (auto use : prevUses[mi])
-        llvm::errs()<<tri->getName(use->getReg())<<" ";
-      llvm::errs()<<"\n";
+//      for (auto def : prevDefs[mi])
+//        llvm::errs()<<tri->getName(def->getReg())<<" ";
+//      llvm::errs()<<"\n";
+//      for (auto use : prevUses[mi])
+//        llvm::errs()<<tri->getName(use->getReg())<<" ";
+//      llvm::errs()<<"\n";
     }
   }
 }
@@ -566,30 +574,60 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
   return targetInter->reg;
 }
 
-unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
-                                                    LiveIntervalIdem *interval) {
-  auto rc = tri->getMinimalPhysRegClass(use->getReg());
-  auto allocSet = tri->getAllocatableSet(*mf);
+void RegisterRenaming::filterUnavailableRegs(MachineOperand* use, BitVector &allocSet) {
 
   DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
     llvm::errs()<<tri->getName(i)<<" ";
   }
-  llvm::errs()<<"\n";);
+            llvm::errs()<<"\n";);
 
   // remove the defined register by use mi from allocable set.
   std::set<MachineOperand*> defs;
   getDefUses(use->getParent(), &defs, 0, tri->getAllocatableSet(*mf));
   for (MachineOperand* phy : defs)
-      allocSet[phy->getReg()] = false;
+    allocSet[phy->getReg()] = false;
 
   // also, we must make sure no the physical register same as
   // use will be assigned.
   allocSet[use->getReg()] = false;
 
-  DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
-    llvm::errs()<<tri->getName(i)<<" ";
+  std::vector<MachineInstr*> worklist;
+  worklist.push_back(use->getParent());
+  std::set<MachineBasicBlock*> visited;
+
+  while (!worklist.empty()) {
+    MachineInstr *startPos = worklist.back();
+    worklist.pop_back();
+
+    // Also the assigned register can not is same as the defined reg by successive instr.
+    MachineBasicBlock::iterator itr(startPos);
+    auto mbb = itr->getParent();
+    if (!visited.count(mbb))
+      continue;
+
+    for (++itr; itr != mbb->end() && !tii->isIdemBoundary(itr); ++itr) {
+      std::set<MachineOperand *> defs;
+      getDefUses(itr, &defs, 0, allocSet);
+      for (auto defMO : defs)
+        allocSet[defMO->getReg()] = false;
+    }
+
+    if (itr != mbb->end())
+      return;
+
+    std::for_each(mbb->succ_begin(), mbb->succ_end(), [&](MachineBasicBlock *succ) {
+      worklist.push_back(&succ->front());
+    });
   }
-  llvm::errs()<<"\n";);
+}
+
+unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
+                                                    LiveIntervalIdem *interval) {
+  auto rc = tri->getMinimalPhysRegClass(use->getReg());
+  auto allocSet = tri->getAllocatableSet(*mf);
+
+  // Remove some registers are not avaiable when making decision of choosing.
+  filterUnavailableRegs(use, allocSet);
 
   // obtains a free register used for move instr.
   unsigned freeReg = tryChooseFreeRegister(*interval, *rc, allocSet);
@@ -625,6 +663,18 @@ void RegisterRenaming::simplifyAntiDeps() {
       if (pair.use == target.use && pair.def != target.def &&
           pair.def->getReg() == target.def->getReg()) {
         // we can remove pair from antiDep list.
+        antiDeps[j] = antiDeps[e-1];
+        antiDeps.pop_back();
+        --j;
+        --e;
+      }
+      else if (antiDeps[j].def == antiDeps[i].def &&
+              antiDeps[j].use->getReg() == antiDeps[i].use->getReg() &&
+              antiDeps[j].use->getParent() == antiDeps[i].use->getParent()) {
+        // R0 = R0 + R0  (two same anti-dependences)
+        antiDeps[i].usesInSameMI.push_back(antiDeps[j].use);
+
+        // delete element at index j.
         antiDeps[j] = antiDeps[e-1];
         antiDeps.pop_back();
         --j;
@@ -730,10 +780,6 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
 
   // insert a boundary right after the use MI for avoiding validating the idem region
   // after use MI.
-  auto useNext = getNextMI(useMI);
-  tii->emitIdemBoundary(*useNext->getParent(), useMI);
-  // Update prev defs and uses dataflow.
-  updatePrevDefUses();
 
   // Inserts a poir of boundary and move instrs at each insertion point.
   for (auto pos : optInsertedPos) {
@@ -759,6 +805,10 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
     clearAntiDeps(pair.use);
 
     pair.use->setReg(phyReg);
+
+    if (!pair.usesInSameMI.empty())
+      std::for_each(pair.usesInSameMI.begin(), pair.usesInSameMI.end(),
+                    [&](AntiDepPair &p) { p.use->setReg(phyReg); });
 
     // Inserts two boundary instruction to surround the move instr.
     tii->emitIdemBoundary(*mbb, pos);
@@ -984,6 +1034,10 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
       clearAntiDeps(pair.use);
       pair.use->setReg(phyReg);
 
+      if (!pair.usesInSameMI.empty())
+        std::for_each(pair.usesInSameMI.begin(), pair.usesInSameMI.end(),
+            [&](AntiDepPair &p) { p.use->setReg(phyReg); });
+
       assert(tii->isIdemBoundary(boundary) && "the mi at inserted position must be a splitting boundary!");
       // Step#10: insert a move instruction before splitting boundary instr.
       // This instruction would be the last killer of src reg in this copy instr.
@@ -997,13 +1051,6 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
       updatePrevDefUses();
     }
   }
-
-  // insert a boundary right after use MI.
-  auto useNext = getNextMI(mi);
-  tii->emitIdemBoundary(*mi->getParent(), useNext);
-
-  // Update prev defs and uses dataflow.
-  updatePrevDefUses();
 
   // remove those anti-dependence pairs from antiDeps list.
   for (auto pair : list) {
@@ -1169,39 +1216,6 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     if (antiDeps.empty())
       break;
 
-    /*
-    DEBUG(
-        li->dump(sequence);
-        for (auto mbb : sequence) {
-          auto mi = mbb->instr_begin();
-          auto end = mbb->instr_end();
-          for (; mi != end; ++mi) {
-            llvm::errs() << li->mi2Idx[mi] << "\n uses: ";
-            auto set = prevUseRegs[mi];
-            for (auto mo : set) {
-              llvm::errs() << tri->getName(mo->getReg()) << ", ";
-            }
-            llvm::errs() << "\n";
-
-            auto defs = prevDefRegs[mi];
-            if (!defs.empty())
-              llvm::errs() << "defs: ";
-            for (auto defMO : defs) {
-              llvm::errs() << tri->getName(defMO->getReg()) << ", ";
-            }
-            llvm::errs() << "\n";
-          }
-        }
-
-        for (auto pair : antiDeps) {
-          llvm::errs() << "use:" << li->mi2Idx[pair.use->getParent()];
-          pair.use->getParent()->dump();
-          llvm::errs() << "def:" << li->mi2Idx[pair.def->getParent()];
-          pair.def->getParent()->dump();
-          llvm::errs() << "\n";
-        });
-    */
-
     // Step#5: checks if we should rename the defined register according to usd-def,
     //         If it is, construct a pair of use-def reg pair.
     simplifyAntiDeps();
@@ -1224,14 +1238,6 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    //if (!scavenger)
-    //  scavenger = new IdemInstrScavenger();
-    //changed |= scavenger->runOnMachineFunction(MF);
-
-
-    // Recompute the def-use regs dataflow equation.
-    //delete li;
-    //li = new LiveIntervalAnalysisIdem();
     li->runOnMachineFunction(MF);
     regions->releaseMemory();
     regions->runOnMachineFunction(MF);
@@ -1250,18 +1256,18 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     llvm::errs()<<"\n      ****** Round #"<<round<<" Result *****\n";
     dump();
     ++round;
-  }while (!antiDeps.empty());
+
+    // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+    bool localChanged;
+    do {
+      localChanged = scavengerIdem();
+      changed |= localChanged;
+    }while(localChanged);
+
+  }while (!antiDeps.empty() && round < 4);
 
   llvm::errs()<<"\n************* After register renaming *************:\n";
   MF.dump();
-
-
-  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-  bool localChanged;
-  do {
-    localChanged = scavengerIdem();
-    changed |= localChanged;
-  }while(localChanged);
 
   li->runOnMachineFunction(MF);
   regions->releaseMemory();
