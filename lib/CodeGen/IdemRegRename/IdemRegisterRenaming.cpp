@@ -384,13 +384,16 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
         auto end = mbb->pred_end();
         for (; itr != end; ++itr) {
           MachineBasicBlock *pred = *itr;
+          if (pred->empty())
+            continue;
+
           MachineInstr *predMI = &pred->back();
           if (!regionContains(Regions, predMI))
             continue;
 
           std::set<MachineOperand*> localUses;
           std::set<MachineOperand*> localDefs;
-          predMI->dump();
+
           getDefUses(predMI, &localDefs, &localUses, allocaSet);
 
           predDefs = Union(localDefs, prevDefs[predMI], predEq);
@@ -404,7 +407,7 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       // otherwise
       std::set<MachineOperand*> localPrevDefs;
       MachineInstr *prevMI = getPrevMI(mi);
-//      prevMI->dump();
+      DEBUG(prevMI->dump());
 
       assert(prevMI && "previous machine instr can't be null!");
       getDefUses(prevMI, &localPrevDefs, 0, allocaSet);
@@ -412,12 +415,12 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       prevDefs[mi] = Union(prevDefs[prevMI], localPrevDefs, predEq);
       prevUses[mi] = Union(prevUses[prevMI], uses);
 
-//      for (auto def : prevDefs[mi])
-//        llvm::errs()<<tri->getName(def->getReg())<<" ";
-//      llvm::errs()<<"\n";
-//      for (auto use : prevUses[mi])
-//        llvm::errs()<<tri->getName(use->getReg())<<" ";
-//      llvm::errs()<<"\n";
+      DEBUG(for (auto def : prevDefs[mi])
+        llvm::errs()<<tri->getName(def->getReg())<<" ";
+      llvm::errs()<<"\n";
+      for (auto use : prevUses[mi])
+        llvm::errs()<<tri->getName(use->getReg())<<" ";
+      llvm::errs()<<"\n";);
     }
   }
 }
@@ -480,7 +483,7 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
       frameIndex = mfi->CreateSpillStackObject(rc->getSize(), rc->getAlignment());
       auto st = getNextMI(mi);
       tii->storeRegToStackSlot(*mi->getParent(), st,
-          mo->getReg(), true, frameIndex, rc, tri);
+          mo->getReg(), false, frameIndex, rc, tri);
       getNextMI(mi)->getOperand(0).setIsUndef(true);
     }
     else if (mo->isUse()) {
@@ -503,8 +506,7 @@ unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
                                                  const TargetRegisterClass &rc,
                                                  BitVector &allocSet) {
   DEBUG(llvm::errs()<<"Interval for move instr: ";
-  interval.dump(*const_cast<TargetRegisterInfo*>(tri));
-  llvm::errs()<<"\n";);
+  interval.dump(*const_cast<TargetRegisterInfo*>(tri)); llvm::errs()<<"\n";);
 
   for (int physReg = allocSet.find_first(); physReg > 0; physReg = allocSet.find_next(physReg)) {
     if (li->intervals.count(physReg)) {
@@ -602,7 +604,7 @@ void RegisterRenaming::filterUnavailableRegs(MachineOperand* use, BitVector &all
     // Also the assigned register can not is same as the defined reg by successive instr.
     MachineBasicBlock::iterator itr(startPos);
     auto mbb = itr->getParent();
-    if (!visited.count(mbb))
+    if (!visited.insert(mbb).second)
       continue;
 
     for (++itr; itr != mbb->end() && !tii->isIdemBoundary(itr); ++itr) {
@@ -668,9 +670,21 @@ void RegisterRenaming::simplifyAntiDeps() {
         --j;
         --e;
       }
-      else if (antiDeps[j].def == antiDeps[i].def &&
-              antiDeps[j].use->getReg() == antiDeps[i].use->getReg() &&
-              antiDeps[j].use->getParent() == antiDeps[i].use->getParent()) {
+    }
+  }
+
+  for (size_t i = 0, e = antiDeps.size(); i < e; i++) {
+    auto target = antiDeps[i];
+    for (size_t j = i + 1; j < e; ++j) {
+      auto pair = antiDeps[j];
+      assert(pair.use->getParent() && pair.use->getParent()->getParent() &&
+          pair.def->getParent() && pair.def->getParent()->getParent());
+
+      assert(pair.use->isReg() && pair.def->isReg());
+
+      if (antiDeps[j].def == antiDeps[i].def &&
+          antiDeps[j].use->getReg() == antiDeps[i].use->getReg() &&
+          antiDeps[j].use->getParent() == antiDeps[i].use->getParent()) {
         // R0 = R0 + R0  (two same anti-dependences)
         antiDeps[i].usesInSameMI.push_back(antiDeps[j].use);
 
@@ -770,9 +784,8 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
   std::set<MachineBasicBlock*> visited;
   getCandidatePosForBoundaryInsert(useMI, candidateInsertPos, visited);
 
-  llvm::errs()<<"candiates insertion positions:\n";
-  for(auto mi : candidateInsertPos)
-    mi->dump();
+  DEBUG(llvm::errs()<<"candiates insertion positions:\n";
+  for(auto mi : candidateInsertPos) mi->dump(););
 
   // Computes the optimizing positions.
   std::vector<MachineInstr *> optInsertedPos;
@@ -808,7 +821,7 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
 
     if (!pair.usesInSameMI.empty())
       std::for_each(pair.usesInSameMI.begin(), pair.usesInSameMI.end(),
-                    [&](AntiDepPair &p) { p.use->setReg(phyReg); });
+                    [=](MachineOperand *p) { p->setReg(phyReg); });
 
     // Inserts two boundary instruction to surround the move instr.
     tii->emitIdemBoundary(*mbb, pos);
@@ -819,11 +832,17 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
 
     // Step#10: insert a move instruction before splitting boundary instr.
     // This instruction would be the last killer of src reg in this copy instr.
-    tii->copyPhysReg(*mbb, pos, DebugLoc(), phyReg, oldReg, true);
+    tii->copyPhysReg(*mbb, pos, DebugLoc(), phyReg, oldReg, false);
 
     // annotate the undef flag to the src reg if src reg is liveIn.
     auto copyMI = getPrevMI(pos);
-    copyMI->getOperand(1).setIsUndef(true);
+
+    // attach the undef flag to all src regs.
+    for (unsigned i = 1, e = copyMI->getNumOperands(); i < e; ++i) {
+      auto &mo = copyMI->getOperand(i);
+      if (mo.isReg() && mo.getReg())
+        mo.setIsUndef(true);
+    }
 
     // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
     updatePrevDefUses();
@@ -973,9 +992,12 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
   std::vector<AntiDepPair> list;
   for (auto &defMO : defs) {
     for (auto &useMO : uses) {
-      if (predEq(defMO, useMO) && !contain(prevDefRegs[useMO->getParent()], useMO, predEq))
+      if (predEq(defMO, useMO) && !contain(prevDefRegs[useMO->getParent()], useMO, predEq)) {
         list.emplace_back(useMO, defMO);
+        goto BREAK;
+      }
     }
+    BREAK: continue;
   }
   // If there is not multiple anti-dependences within the same mi, use other function
   // to handle this case.
@@ -998,7 +1020,6 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
 
 
   // An optimization tricky: if there is a splitting boundary exists, no insert splitting.
-
   std::set<MachineInstr*> candidateInsertPos;
   std::set<MachineBasicBlock*> visited;
   getCandidatePosForBoundaryInsert(mi, candidateInsertPos, visited);
@@ -1021,7 +1042,6 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
       LiveIntervalIdem *interval = new LiveIntervalIdem;
       auto from = to - 1;
 
-      // FIXME, 9/17/2018 live range is not correct.
       interval->addRange(from, to);    // add an interval for a temporal move instr.
       unsigned phyReg = choosePhysRegForRenaming(pair.use, interval);
 
@@ -1036,7 +1056,7 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
 
       if (!pair.usesInSameMI.empty())
         std::for_each(pair.usesInSameMI.begin(), pair.usesInSameMI.end(),
-            [&](AntiDepPair &p) { p.use->setReg(phyReg); });
+            [=](MachineOperand *p) { p->setReg(phyReg); });
 
       assert(tii->isIdemBoundary(boundary) && "the mi at inserted position must be a splitting boundary!");
       // Step#10: insert a move instruction before splitting boundary instr.
@@ -1045,8 +1065,13 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
 
       // annotate the undef flag to the src reg if src reg is liveIn.
       auto copyMI = getPrevMI(boundary);
-      copyMI->getOperand(1).setIsUndef(true);
 
+      // attach the undef flag to all src regs.
+      for (unsigned i = 1, e = copyMI->getNumOperands(); i < e; ++i) {
+        auto &mo = copyMI->getOperand(i);
+        if (mo.isReg() && mo.getReg())
+          mo.setIsUndef(true);
+      }
       // Update prev defs and uses dataflow.
       updatePrevDefUses();
     }
@@ -1220,8 +1245,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     //         If it is, construct a pair of use-def reg pair.
     simplifyAntiDeps();
 
-    llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n";
-    dump();
+    DEBUG(llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n"; dump(););
 
     while (!antiDeps.empty()) {
       auto pair = antiDeps.front();
@@ -1253,8 +1277,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    llvm::errs()<<"\n      ****** Round #"<<round<<" Result *****\n";
-    dump();
+    DEBUG(llvm::errs()<<"\n      ****** Round #"<<round<<" Result *****\n"; dump(););
     ++round;
 
     // FIXME, cleanup is needed for transforming some incorrect code into normal status.
@@ -1266,8 +1289,8 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
   }while (!antiDeps.empty() && round < 4);
 
-  llvm::errs()<<"\n************* After register renaming *************:\n";
-  MF.dump();
+  DEBUG(llvm::errs()<<"\n************* After register renaming *************:\n";
+  MF.dump(););
 
   li->runOnMachineFunction(MF);
   regions->releaseMemory();
@@ -1287,7 +1310,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   // FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
   assert(antiDeps.empty() && "Anti-dependences exist!");
 
-  llvm::errs()<<"\n************* After Scavenger *************:\n";
-  MF.dump();
+  DEBUG(llvm::errs()<<"\n************* After Scavenger *************:\n";
+  MF.dump(););
   return changed;
 }
