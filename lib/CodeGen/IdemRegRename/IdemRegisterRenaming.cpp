@@ -96,6 +96,12 @@ namespace {
                                std::map<MachineInstr*, std::set<MachineOperand*>> &prevUses);
     inline void addAntiDeps(MachineOperand *useMO, MachineOperand *defMO);
     void collectRefDefUseInfo(MachineInstr *mi, SmallVectorImpl<IdempotentRegion *> *Regions);
+    /**
+     * Checks if the MachineInstr is two address instruction or not. Return true if it is.
+     * @param useMI
+     * @return
+     */
+    bool isTwoAddressInstr(MachineInstr *useMI);
     bool shouldRename(AntiDepPair pair);
     void filterUnavailableRegs(MachineOperand* use, BitVector &allocSet);
     unsigned choosePhysRegForRenaming(MachineOperand *use,
@@ -452,6 +458,11 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
 
   for (auto defMO : defs) {
     for (MachineOperand *mo : prevUses) {
+
+      // We should not collect pair about two address instruction.
+      if (isTwoAddressInstr(mo->getParent()))
+        continue;
+
       // we don't care those anti-dependence whose def and use are not  belong to
       // the same idempotence region.
       if (!regionContains(Regions, mo->getParent()))
@@ -464,10 +475,29 @@ void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
   }
 }
 
+bool RegisterRenaming::isTwoAddressInstr(MachineInstr *useMI) {
+  // We should not rename the two-address instruction.
+  auto MCID = useMI->getDesc();
+  int numOps = useMI->isInlineAsm() ? useMI->getNumOperands() : MCID.getNumOperands();
+  for (int i = 0; i < numOps; i++) {
+    unsigned destIdx;
+    if (!useMI->isRegTiedToDefOperand(i, &destIdx))
+      continue;
+
+    return true;
+  }
+  return false;
+}
+
 bool RegisterRenaming::shouldRename(AntiDepPair pair) {
   auto use = pair.use;
   MachineInstr *useMI = use->getParent();
   std::set<MachineOperand*> &defs = prevDefRegs[useMI];
+
+  // We should not rename the two-address instruction.
+  if (isTwoAddressInstr(useMI))
+    return false;
+
   return !contain(defs, use, predEq);
 }
 
