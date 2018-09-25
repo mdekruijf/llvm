@@ -15,7 +15,6 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
-#include <llvm/Support/Debug.h>
 #include "LiveIntervalAnalysisIdem.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/Target/TargetData.h"
@@ -133,7 +132,9 @@ namespace {
                                           std::set<MachineInstr*> &candidates,
                                           std::set<MachineBasicBlock*> &visited);
 
-    void computeDistance(MachineInstr *startPos,
+    typedef std::pair<MachineBasicBlock::reverse_iterator, MachineBasicBlock::reverse_iterator> ItrRange;
+
+    void computeDistance(ItrRange range,
                          std::set<MachineInstr*> &candidates,
                          std::map<MachineInstr*, unsigned> &dists,
                          unsigned distance,
@@ -413,7 +414,7 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       // otherwise
       std::set<MachineOperand*> localPrevDefs;
       MachineInstr *prevMI = getPrevMI(mi);
-      DEBUG(prevMI->dump());
+      IDEM_DEBUG(prevMI->dump());
 
       assert(prevMI && "previous machine instr can't be null!");
       getDefUses(prevMI, &localPrevDefs, 0, allocaSet);
@@ -421,7 +422,7 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       prevDefs[mi] = Union(prevDefs[prevMI], localPrevDefs, predEq);
       prevUses[mi] = Union(prevUses[prevMI], uses);
 
-      DEBUG(for (auto def : prevDefs[mi])
+      IDEM_DEBUG(for (auto def : prevDefs[mi])
         llvm::errs()<<tri->getName(def->getReg())<<" ";
       llvm::errs()<<"\n";
       for (auto use : prevUses[mi])
@@ -535,14 +536,14 @@ bool RegisterRenaming::availableOnRegClass(unsigned physReg,
 unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
                                                  const TargetRegisterClass &rc,
                                                  BitVector &allocSet) {
-  DEBUG(llvm::errs()<<"Interval for move instr: ";
+  IDEM_DEBUG(llvm::errs()<<"Interval for move instr: ";
   interval.dump(*const_cast<TargetRegisterInfo*>(tri)); llvm::errs()<<"\n";);
 
   for (int physReg = allocSet.find_first(); physReg > 0; physReg = allocSet.find_next(physReg)) {
     if (li->intervals.count(physReg)) {
       LiveIntervalIdem *itrv = li->intervals[physReg];
 
-      DEBUG(llvm::errs()<<"Candidated interval: ";
+      IDEM_DEBUG(llvm::errs()<<"Candidated interval: ";
       itrv->dump(*const_cast<TargetRegisterInfo*>(tri));
       llvm::errs()<<"\n";);
 
@@ -597,7 +598,7 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
   // no proper interval found to be spilled out.
   if (!targetInter) return 0;
 
-  DEBUG(llvm::errs()<<"Selected evicted physical register is: "
+  IDEM_DEBUG(llvm::errs()<<"Selected evicted physical register is: "
   << tri->getName(targetInter->reg)<<"\n";
   llvm::errs()<<"\nSelected evicted interval is: ";
   targetInter->dump(*const_cast<TargetRegisterInfo*>(tri)););
@@ -608,7 +609,7 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
 
 void RegisterRenaming::filterUnavailableRegs(MachineOperand* use, BitVector &allocSet) {
 
-  DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
+  IDEM_DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
     llvm::errs()<<tri->getName(i)<<" ";
   }
             llvm::errs()<<"\n";);
@@ -814,7 +815,7 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
   std::set<MachineBasicBlock*> visited;
   getCandidatePosForBoundaryInsert(useMI, candidateInsertPos, visited);
 
-  DEBUG(llvm::errs()<<"candiates insertion positions:\n";
+  IDEM_DEBUG(llvm::errs()<<"candiates insertion positions:\n";
   for(auto mi : candidateInsertPos) mi->dump(););
 
   // Computes the optimizing positions.
@@ -932,31 +933,43 @@ void RegisterRenaming::getCandidatePosForBoundaryInsert(MachineInstr *startPos,
   getCandidateInsertionPositionsDFS(startPos, candidates, visited);
 }
 
-void RegisterRenaming::computeDistance(MachineInstr *startPos,
+void RegisterRenaming::computeDistance(ItrRange range,
                      std::set<MachineInstr*> &candidates,
                      std::map<MachineInstr*, unsigned> &dists,
                      unsigned distance,
                      std::set<MachineBasicBlock*> &visited) {
-  assert(startPos && startPos->getParent());
-  auto mbb = startPos->getParent();
 
-  if (!visited.insert(mbb).second)
-    return;
+  std::vector<ItrRange> worklsit;
+  worklsit.push_back(range);
 
-  auto mbbEnd = mbb->rend();
-  MachineBasicBlock::reverse_iterator mi(startPos);
-  --mi;
-
-  for (; mi != mbbEnd && !tii->isIdemBoundary(&*mi); ++mi, ++distance) {
-    if (!candidates.count(&*mi))
+  while (!worklsit.empty()) {
+    auto r = worklsit.back();
+    worklsit.pop_back();
+    if (r.first == r.second)
       continue;
+    auto mi = r.first;
+    assert(mi->getParent());
+    auto mbbEnd = r.second;
+    auto mbb = mi->getParent();
 
-    dists[&*mi] = distance;
-  }
+    if (std::distance(mi, mbbEnd) >= 0) {
 
-  if (mi == mbbEnd) {
+      if (!visited.insert(mbb).second)
+        continue;
+      IDEM_DEBUG(mi->dump(););
+
+      for (; mi != mbbEnd && !tii->isIdemBoundary(&*mi); ++mi, ++distance) {
+        if (!candidates.count(&*mi))
+          continue;
+
+        dists[&*mi] = distance;
+      }
+    }
+
     std::for_each(mbb->pred_begin(), mbb->pred_end(), [&](MachineBasicBlock *pred)
-    { return computeDistance(&*pred->rbegin(), candidates, dists, distance, visited); });
+    {
+      worklsit.push_back({pred->rbegin(), pred->rend()});
+    });
   }
 }
 
@@ -986,7 +999,8 @@ void RegisterRenaming::computeOptimizedInsertion(MachineInstr *startPos,
   // advance forward along with CFG edge.
   std::map<MachineInstr*, unsigned> dists;
   std::set<MachineBasicBlock*> visited;
-  computeDistance(startPos, candidates, dists, 0, visited);
+  ItrRange range = {--MachineBasicBlock::reverse_iterator(startPos), startPos->getParent()->rend()};
+  computeDistance(range, candidates, dists, 0, visited);
 
   std::vector<std::pair<MachineInstr*, unsigned> > tmp;
   for (std::pair<MachineInstr*, unsigned> pair : dists) {
@@ -1275,7 +1289,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     //         If it is, construct a pair of use-def reg pair.
     simplifyAntiDeps();
 
-    DEBUG(llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n"; dump(););
+    IDEM_DEBUG(llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n"; dump(););
 
     while (!antiDeps.empty()) {
       auto pair = antiDeps.front();
@@ -1307,7 +1321,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    DEBUG(llvm::errs()<<"\n      ****** Round #"<<round<<" Result *****\n"; dump(););
+    IDEM_DEBUG(llvm::errs()<<"\n      ****** Round #"<<round<<" Result *****\n"; dump(););
     ++round;
 
     // FIXME, cleanup is needed for transforming some incorrect code into normal status.
@@ -1319,7 +1333,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
   }while (!antiDeps.empty() && round < 4);
 
-  DEBUG(llvm::errs()<<"\n************* After register renaming *************:\n";
+  IDEM_DEBUG(llvm::errs()<<"\n************* After register renaming *************:\n";
   MF.dump(););
 
   li->runOnMachineFunction(MF);
@@ -1340,7 +1354,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   // FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
   assert(antiDeps.empty() && "Anti-dependences exist!");
 
-  DEBUG(llvm::errs()<<"\n************* After Scavenger *************:\n";
+  IDEM_DEBUG(llvm::errs()<<"\n************* After Scavenger *************:\n";
   MF.dump(););
   return changed;
 }

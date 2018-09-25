@@ -390,7 +390,7 @@ bool LiveIntervalAnalysisIdem::runOnMachineFunction(MachineFunction &MF) {
 
   // Dump some useful information for it to review the correctness
   // of this transformation.
-  DEBUG(dump(sequence));
+  IDEM_DEBUG(dump(sequence););
   return false;
 }
 

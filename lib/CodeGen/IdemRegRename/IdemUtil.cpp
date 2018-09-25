@@ -4,10 +4,22 @@
 
 #include <deque>
 #include <vector>
+#include <llvm/Support/CommandLine.h>
 #include "IdemUtil.h"
 
 using namespace std;
 using namespace llvm;
+
+#ifndef NDEBUG
+bool llvm::DebugIdemFlag;
+
+// -idem-debug - Command line option to enable the DEBUG statements in the idem passes.
+// This flag may only be enabled in debug builds.
+static cl::opt<bool, true>
+    IdemDebug("idem-debug", cl::desc("Enable debug output on Idempotence"), cl::Hidden,
+          cl::location(DebugIdemFlag));
+
+#endif
 
 void llvm::computeReversePostOrder(MachineFunction &MF,
                              MachineDominatorTree &dt,
