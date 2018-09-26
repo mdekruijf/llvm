@@ -294,6 +294,15 @@ void LLVMTargetMachine::printAndVerifyIdem(PassManagerBase &PM,
     PM.add(createMachineVerifierPass(Banner));
 }
 
+void LLVMTargetMachine::printAndVerifyRegRenaming(PassManagerBase &PM,
+                                                  const char *Banner) const {
+  if (Options.PrintMachineCode)
+    PM.add(createMachineFunctionPrinterPass(dbgs(), Banner));
+
+  if (RenamingIdemVerify)
+    PM.add(createMachineVerifierPass(Banner));
+}
+
 /// addCommonCodeGenPasses - Add standard LLVM codegen passes used for both
 /// emitting to assembly files or machine code output.
 ///
@@ -463,7 +472,7 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   // Commented by Jianping Zeng on 9/5/2018.
   if (EnableRegisterRenaming) {
     PM.add(llvm::createRegisterRenamingPass());
-    printAndVerifyIdem(PM, "After Register Renaming for idem");
+    printAndVerifyRegRenaming(PM, "After Register Renaming for idem");
   }
 
   // Perform stack slot coloring and post-ra machine LICM.

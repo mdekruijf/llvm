@@ -53,5 +53,10 @@ cl::opt<bool> EnableRegisterRenaming(
     cl::desc("Indicates if enable register renaming or not"),
     cl::init(false));
 
+cl::opt<bool> RenamingIdemVerify(
+    "renaming-idem-verify", cl::Hidden,
+    cl::desc("Verify idempotence preservation after register renaming"),
+    cl::init(false));
+
 } // namespace llvm
 

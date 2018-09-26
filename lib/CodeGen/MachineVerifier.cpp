@@ -1344,8 +1344,14 @@ static void dumpWrittenAndExposedVars(const MachineBasicBlock &MBB,
 }
 
 void MachineVerifier::verifyIdempotentRegions() {
-  if (IdempotencePreservationMode == IdempotenceOptions::NoPreservation)
+  if (IdempotencePreservationMode == IdempotenceOptions::NoPreservation &&
+     // Jianping Zeng
+     // perform verification on Machine Function when register renaming is enabled
+    !EnableRegisterRenaming)
     return;
+
+  if (EnableRegisterRenaming)
+    IdempotencePreservationMode = IdempotenceOptions::VariableCF;
 
   for (MachineIdempotentRegions::const_iterator R = MIR->begin(),
        RE = MIR->end(); R != RE; ++R) {

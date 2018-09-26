@@ -63,6 +63,9 @@ namespace llvm {
   /// Flags tell compiler if should enable register renaming or not.
   /// @author Jianping Zeng.
   extern cl::opt<bool> EnableRegisterRenaming;
+
+  extern cl::opt<bool> RenamingIdemVerify;
+
 } // namespace llvm
 
 #endif // LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H

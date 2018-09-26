@@ -414,7 +414,7 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       // otherwise
       std::set<MachineOperand*> localPrevDefs;
       MachineInstr *prevMI = getPrevMI(mi);
-      IDEM_DEBUG(prevMI->dump());
+      //IDEM_DEBUG(prevMI->dump());
 
       assert(prevMI && "previous machine instr can't be null!");
       getDefUses(prevMI, &localPrevDefs, 0, allocaSet);
@@ -422,12 +422,13 @@ void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
       prevDefs[mi] = Union(prevDefs[prevMI], localPrevDefs, predEq);
       prevUses[mi] = Union(prevUses[prevMI], uses);
 
+      /*
       IDEM_DEBUG(for (auto def : prevDefs[mi])
         llvm::errs()<<tri->getName(def->getReg())<<" ";
       llvm::errs()<<"\n";
       for (auto use : prevUses[mi])
         llvm::errs()<<tri->getName(use->getReg())<<" ";
-      llvm::errs()<<"\n";);
+      llvm::errs()<<"\n";);*/
     }
   }
 }
@@ -543,7 +544,7 @@ unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
     if (li->intervals.count(physReg)) {
       LiveIntervalIdem *itrv = li->intervals[physReg];
 
-      IDEM_DEBUG(llvm::errs()<<"Candidated interval: ";
+      IDEM_DEBUG(llvm::errs()<<"Candidate interval: ";
       itrv->dump(*const_cast<TargetRegisterInfo*>(tri));
       llvm::errs()<<"\n";);
 
@@ -609,11 +610,11 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
 
 void RegisterRenaming::filterUnavailableRegs(MachineOperand* use, BitVector &allocSet) {
 
-  IDEM_DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
+  /*IDEM_DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
     llvm::errs()<<tri->getName(i)<<" ";
   }
-            llvm::errs()<<"\n";);
-
+  llvm::errs()<<"\n";);
+  */
   // remove the defined register by use mi from allocable set.
   std::set<MachineOperand*> defs;
   getDefUses(use->getParent(), &defs, 0, tri->getAllocatableSet(*mf));
@@ -785,6 +786,9 @@ void RegisterRenaming::updatePrevDefUses() {
   regions->releaseMemory();
   regions->runOnMachineFunction(*const_cast<MachineFunction*>(mf));
 
+  // FIXME, We need to update LiveIntervalAnalysis result caused by inserting move and spill code
+  li->runOnMachineFunction(*const_cast<MachineFunction*>(mf));
+
   for (auto &mbb : sequence) {
     auto mi = mbb->instr_begin();
     auto mie = mbb->instr_end();
@@ -815,7 +819,7 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
   std::set<MachineBasicBlock*> visited;
   getCandidatePosForBoundaryInsert(useMI, candidateInsertPos, visited);
 
-  IDEM_DEBUG(llvm::errs()<<"candiates insertion positions:\n";
+  IDEM_DEBUG(llvm::errs()<<"candidate insertion positions:\n";
   for(auto mi : candidateInsertPos) mi->dump(););
 
   // Computes the optimizing positions.
@@ -827,6 +831,8 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
 
   // Inserts a poir of boundary and move instrs at each insertion point.
   for (auto pos : optInsertedPos) {
+    IDEM_DEBUG(llvm::errs()<<"Inserted position:\n"; pos->dump(););
+
     assert(pos && pos->getParent() &&
     pos->getParent()->getParent() == mf);
 
@@ -835,6 +841,10 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
     // FIXME, 9/17/2018. Now, live range computes correctly .
     LiveIntervalIdem *interval = new LiveIntervalIdem;
     auto to = li->getIndex(useMI);
+    if (to == 512) {
+      pos->dump();
+    }
+
     auto from = li->getIndex(pos) - 2;
 
     interval->addRange(from, to);    // add an interval for a temporal move instr.
@@ -878,6 +888,8 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair) {
     // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
     updatePrevDefUses();
   }
+
+  IDEM_DEBUG(llvm::errs()<<"After inserted move instruction:\n"; mf->dump(););
 }
 
 void RegisterRenaming::getCandidateInsertionPositionsDFS(MachineInstr *startPos,
@@ -1189,6 +1201,19 @@ bool RegisterRenaming::idemCanBeRemoved(MachineInstr *mi) {
   return removable;
 }
 
+bool clearUselessIdem(std::vector<MachineInstr*> &removable) {
+  bool changed = false;
+  if (!removable.empty()) {
+    std::for_each(removable.begin(), removable.end(), [&](MachineInstr *mi)
+    {
+      mi->eraseFromParent();
+      changed = true;
+    });
+    removable.clear();
+  }
+  return changed;
+}
+
 bool RegisterRenaming::scavengerIdem() {
 
   std::vector<MachineInstr*> removable;
@@ -1198,7 +1223,24 @@ bool RegisterRenaming::scavengerIdem() {
     if (mbb.empty())
       continue;
 
+    // In simply case, delete a sequence of idem call instr.
     auto itr = mbb.begin();
+    for (; itr != mbb.end(); ) {
+
+      if (!tii->isIdemBoundary(&*itr)) {
+        ++itr;
+        continue;
+      }
+
+      auto next = ++itr;
+      while (next != mbb.end() && tii->isIdemBoundary(&*next)) {
+        removable.push_back(const_cast<MachineInstr *>(&*next++));
+      }
+      itr = next;
+    }
+    changed |= clearUselessIdem(removable);
+
+    itr = mbb.begin();
     for (; itr != mbb.end(); ++itr) {
       auto mi = const_cast<MachineInstr*>(&*itr);
       if (!tii->isIdemBoundary(mi))
@@ -1207,30 +1249,10 @@ bool RegisterRenaming::scavengerIdem() {
       if (idemCanBeRemoved(mi)) {
         // remove this mi.
         removable.push_back(mi);
-        /*
-        mi->eraseFromParent();
-        regions->releaseMemory();
-        regions->runOnMachineFunction(*const_cast<MachineFunction*>(mf));
-        for (auto &MBB : sequence) {
-          auto MI = MBB->instr_begin();
-          auto MIE = MBB->instr_end();
-          for (; MI != MIE; ++MI) {
-            // Step#3: collects reg definition information.
-            // Step#4: collects reg uses information.
-            SmallVectorImpl<IdempotentRegion *> Regions(10);
-            regions->getRegionsContaining(*MI, &Regions);
-            collectRefDefUseInfo(MI, &Regions);
-          }
-        }
-         */
       }
     }
-  }
 
-  if (!removable.empty()) {
-    changed = true;
-    for (MachineInstr* mi : removable)
-      mi->eraseFromParent();
+   changed |= clearUselessIdem(removable);
   }
   return changed;
 }
@@ -1263,9 +1285,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   computeReversePostOrder(MF, *dt, sequence);
   bool changed = false;
 
-  unsigned round = 1;
+  // unsigned round = 1;
 
-  do {
+  // do {
     antiDeps.clear();
 
     // Step#2: visits register operand of each machine instr in the program sequence.
@@ -1273,6 +1295,8 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       auto mi = mbb->instr_begin();
       auto mie = mbb->instr_end();
       for (; mi != mie; ++mi) {
+        assert(li->mi2Idx.count(mi));
+
         // Step#3: collects reg definition information.
         // Step#4: collects reg uses information.
         SmallVectorImpl<IdempotentRegion *> Regions(10);
@@ -1283,13 +1307,24 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
     // If there is not antiDeps exist, just early break from do loop.
     if (antiDeps.empty())
-      break;
+      return changed;
 
     // Step#5: checks if we should rename the defined register according to usd-def,
     //         If it is, construct a pair of use-def reg pair.
     simplifyAntiDeps();
 
-    IDEM_DEBUG(llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n"; dump(););
+    // IDEM_DEBUG(llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n"; dump(););
+
+    IDEM_DEBUG(
+        llvm::errs()<<"\n************* Anti-dependences *************\n";
+        for (auto pair : antiDeps) {
+          unsigned defIdx = li->mi2Idx[pair.def->getParent()];
+          llvm::errs()<<"["<<defIdx<<','<<li->mi2Idx[pair.use->getParent()]<<
+          ", "<< tri->getName(pair.use->getReg())<<"]\n";
+          for (auto use : pair.usesInSameMI)
+            llvm::errs()<<"["<<defIdx<<','<<li->mi2Idx[use->getParent()]<<
+                        ", "<< tri->getName(use->getReg())<<"]\n";
+    });
 
     while (!antiDeps.empty()) {
       auto pair = antiDeps.front();
@@ -1306,6 +1341,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    /*
     li->runOnMachineFunction(MF);
     regions->releaseMemory();
     regions->runOnMachineFunction(MF);
@@ -1323,6 +1359,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
     IDEM_DEBUG(llvm::errs()<<"\n      ****** Round #"<<round<<" Result *****\n"; dump(););
     ++round;
+     */
 
     // FIXME, cleanup is needed for transforming some incorrect code into normal status.
     bool localChanged;
@@ -1331,30 +1368,17 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       changed |= localChanged;
     }while(localChanged);
 
-  }while (!antiDeps.empty() && round < 4);
+    changed |= localChanged;
 
-  IDEM_DEBUG(llvm::errs()<<"\n************* After register renaming *************:\n";
-  MF.dump(););
+  //}while (!antiDeps.empty() && round < 4);
 
-  li->runOnMachineFunction(MF);
-  regions->releaseMemory();
-  regions->runOnMachineFunction(MF);
-  for (auto &mbb : sequence) {
-    auto mi = mbb->instr_begin();
-    auto mie = mbb->instr_end();
-    for (; mi != mie; ++mi) {
-      // Step#3: collects reg definition information.
-      // Step#4: collects reg uses information.
-      SmallVectorImpl<IdempotentRegion *> Regions(10);
-      regions->getRegionsContaining(*mi, &Regions);
-      collectRefDefUseInfo(mi, &Regions);
-    }
-  }
+  //IDEM_DEBUG(llvm::errs()<<"\n************* After register renaming *************:\n";
+  //MF.dump(););
 
   // FIXME, we should check whether anti-dependence will occurs after inserting a move instr.
-  assert(antiDeps.empty() && "Anti-dependences exist!");
+  // assert(antiDeps.empty() && "Anti-dependences exist!");
 
-  IDEM_DEBUG(llvm::errs()<<"\n************* After Scavenger *************:\n";
-  MF.dump(););
+  //IDEM_DEBUG(llvm::errs()<<"\n************* After Scavenger *************:\n";
+  //MF.dump(););
   return changed;
 }
