@@ -315,7 +315,7 @@ IdempotentRegion::dfs_mbb_iterator<MachineInstrTy>::computeEnd() const {
   MachineBasicBlockItTy I = Start_, IE = MBB_->end();
   MachineBasicBlockItTy Entry = &Region_->getEntry();
   for (; I != IE; ++I) {
-    assert(I != Entry && "wrap to entry should be impossible after patching");
+    //assert(I != Entry && "wrap to entry should be impossible after patching");
     if (I == Init_ || isExit(I))
       return I;
   }
