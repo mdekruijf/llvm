@@ -18,7 +18,7 @@ enum {
   USE,
   DEF,
   STORE,
-  NUM = 8
+  NUM = 4
 };
 
 // forward declaration.
@@ -168,6 +168,18 @@ public:
   MachineDominatorTree *dt;
   MachineLoopInfo *loopInfo;
 
+  virtual void releaseMemory() override {
+    idx2MI.clear();
+    mi2Idx.clear();
+    tri = nullptr;
+    intervals.clear();
+    liveIns.clear();
+    liveOuts.clear();
+    allocatableRegs.clear();
+    mf = nullptr;
+    dt = nullptr;
+    loopInfo = nullptr;
+  }
 private:
   void computeLocalLiveSet(std::vector<MachineBasicBlock *> &sequence,
                            std::vector<std::set<unsigned> > &liveGen,

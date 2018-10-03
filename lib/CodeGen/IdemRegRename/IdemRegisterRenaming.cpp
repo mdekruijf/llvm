@@ -89,6 +89,17 @@ public:
     //delete scavenger;
   }
 private:
+  /**
+   * This method should be called to respond to re-construct idempotence and
+   * live interval information.
+   */
+  void reconstructIdemAndLiveInterval() {
+    regions->releaseMemory();
+    regions->runOnMachineFunction(*const_cast<MachineFunction *>(mf));
+    li->releaseMemory();
+    li->runOnMachineFunction(*const_cast<MachineFunction *>(mf));
+  }
+
   bool regionContains(IdempotentRegion *region, MachineInstr *mi);
 
   bool regionContains(SmallVectorImpl<IdempotentRegion *> *Regions, MachineInstr *mi);
@@ -113,19 +124,25 @@ private:
   unsigned choosePhysRegForRenaming(MachineOperand *use,
                                     LiveIntervalIdem *interval);
   unsigned tryChooseFreeRegister(LiveIntervalIdem &interval,
-                                 const TargetRegisterClass &rc,
+                                 int useReg,
                                  BitVector &allocSet);
-  bool availableOnRegClass(unsigned physReg, const TargetRegisterClass &rc);
+  /**
+   * Checks if it is legal to replace reg with physReg.
+   * @param physReg
+   * @param reg
+   * @return
+   */
+  inline bool legalToReplace(unsigned physReg, int reg);
 
   unsigned tryChooseBlockedRegister(LiveIntervalIdem &interval,
-                                    const TargetRegisterClass &rc,
+                                    int useReg,
                                     BitVector &allocSet);
 
   void spillOutInterval(LiveIntervalIdem *interval);
 
   void simplifyAntiDeps();
 
-  void clearAntiDeps(MachineOperand *useMO);
+//  void clearAntiDeps(MachineOperand *useMO);
 
   void updatePrevDefUses();
 
@@ -152,7 +169,6 @@ private:
                                  std::vector<MachineInstr *> &InsertedPos);
 
   bool handleMultiDepsWithinSameMI(AntiDepPair &pair);
-  bool handleMultiUseOneDefWithinSameMI(AntiDepPair &pair);
 
   bool scavengerIdem();
 
@@ -283,22 +299,6 @@ static void intersect(std::set<T> &res, std::set<T> lhs, std::set<T> rhs) {
     if (!rhs.count(elt))
       res.insert(elt);
   }
-}
-
-struct DefUseOfMI {
-  std::set<MachineOperand *> *uses;
-  std::set<unsigned> *defs;
-};
-
-std::map<MachineInstr *, DefUseOfMI *> map;
-
-DefUseOfMI *getOrCreateDefUse(MachineInstr *mi,
-                              std::set<MachineOperand *> *uses,
-                              std::set<unsigned> *defs) {
-  DefUseOfMI *&res = map[mi];
-  if (!res)
-    res = new DefUseOfMI{uses, defs};
-  return res;
 }
 
 static void getDefUses(MachineInstr *mi,
@@ -542,7 +542,14 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
       auto st = getNextMI(mi);
       tii->storeRegToStackSlot(*mi->getParent(), st,
                                mo->getReg(), false, frameIndex, rc, tri);
-      getNextMI(mi)->getOperand(0).setIsUndef(true);
+
+      auto copyMI = getNextMI(mi);
+      for (int i = copyMI->getNumOperands()-1; i >= 0; --i)
+        if (copyMI->getOperand(i).isReg() && copyMI->getOperand(i).getReg() == mo->getReg()) {
+          copyMI->getOperand(i).setIsUndef(true);
+          break;
+        }
+
     } else if (mo->isUse()) {
       assert(frameIndex != INT_MIN);
       tii->loadRegFromStackSlot(*mi->getParent(), mi, mo->getReg(), frameIndex, rc, tri);
@@ -554,13 +561,28 @@ void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
   }
 }
 
-bool RegisterRenaming::availableOnRegClass(unsigned physReg,
-                                           const TargetRegisterClass &rc) {
-  return tri->getMinimalPhysRegClass(physReg)->hasSubClassEq(&rc) /*&& !mri->isLiveIn(physReg)*/;
+bool intersects(BitVector lhs, BitVector rhs) {
+  for (int idx = lhs.find_first(); idx != -1; idx = lhs.find_next(idx))
+    if (!rhs[idx])
+      return false;
+
+  return true;
+}
+
+bool RegisterRenaming::legalToReplace(unsigned physReg, int reg) {
+  for (unsigned i = 0, e = tri->getNumRegClasses(); i < e; i++) {
+    auto rc = tri->getRegClass(i);
+    if (rc->contains(physReg) && rc->contains(reg))
+      return true;
+  }
+  return false;
+
+  /*llvm::errs()<<tri->getMinimalPhysRegClass(physReg)->getName()<<", "<< rc.getName()<<"\n";
+  return tri->getMinimalPhysRegClass(physReg)->hasSubClassEq(&rc) *//*&& !mri->isLiveIn(physReg)*//*;*/
 }
 
 unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
-                                                 const TargetRegisterClass &rc,
+                                                 int useReg,
                                                  BitVector &allocSet) {
   IDEM_DEBUG(llvm::errs() << "Interval for move instr: ";
                  interval.dump(*const_cast<TargetRegisterInfo *>(tri));
@@ -579,12 +601,12 @@ unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
         // interval.
         // No matching in register class should be ignored.
         // Avoiding LiveIn register(such as argument register).
-        if (!availableOnRegClass(physReg, rc))
+        if (!legalToReplace(physReg, useReg))
           continue;
 
         return physReg;
       }
-    } else if (availableOnRegClass(physReg, rc)) {
+    } else if (legalToReplace(physReg, useReg)) {
       // current physReg is free, so return it.
       return static_cast<unsigned int>(physReg);
     }
@@ -593,7 +615,7 @@ unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
 }
 
 unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
-                                                    const TargetRegisterClass &rc,
+                                                    int useReg,
                                                     BitVector &allocSet) {
   // choose an interval to be evicted into memory, and insert spilling code as
   // appropriate.
@@ -601,16 +623,14 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
   LiveIntervalIdem *targetInter = nullptr;
   for (auto physReg = allocSet.find_first(); physReg > 0;
        physReg = allocSet.find_next(physReg)) {
-    llvm::errs()<<tri->getName(physReg)<<"\n";
-
-    if (!availableOnRegClass(physReg, rc))
+    if (!legalToReplace(physReg, useReg))
       continue;
     assert(li->intervals.count(physReg) && "Why tryChooseFreeRegister does't return it?");
     auto phyItv = li->intervals[physReg];
 
-    llvm::errs()<<"Found: "<< tri->getMinimalPhysRegClass(physReg)<<"\n";
+    IDEM_DEBUG(llvm::errs()<<"Found: "<< tri->getMinimalPhysRegClass(physReg)<<"\n";);
     // TargetRegisterClass isn't compatible with each other.
-    if (!availableOnRegClass(phyItv->reg, rc))
+    if (!legalToReplace(phyItv->reg, useReg))
       continue;
 
     if (mri->isLiveIn(physReg))
@@ -658,9 +678,9 @@ void RegisterRenaming::filterUnavailableRegs(MachineOperand *use,
   allocSet[use->getReg()] = false;
 
   // Remove some physical register whose register class is not compatible with rc.
-  const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(use->getReg());
+  // const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(use->getReg());
   for (int physReg = allocSet.find_first(); physReg != -1; physReg = allocSet.find_next(physReg))
-    if (!availableOnRegClass(physReg, *rc))
+    if (!legalToReplace(physReg, use->getReg()))
       allocSet[physReg] = false;
 
   // When we use another new register to replace the used register,
@@ -718,15 +738,16 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
                                                     LiveIntervalIdem *interval) {
   auto rc = tri->getMinimalPhysRegClass(use->getReg());
   auto allocSet = tri->getAllocatableSet(*mf);
+  IDEM_DEBUG(llvm::errs()<<"Required: "<<rc->getName()<<"\n";);
 
   // Remove some registers are not available when making decision of choosing.
   filterUnavailableRegs(use, allocSet);
 
-  llvm::errs()<<"Required: "<<tri->getMinimalPhysRegClass(use->getReg())->getName()<<"\n";
   // obtains a free register used for move instr.
-  unsigned freeReg = tryChooseFreeRegister(*interval, *rc, allocSet);
+  unsigned useReg = use->getReg();
+  unsigned freeReg = tryChooseFreeRegister(*interval, useReg, allocSet);
   if (!freeReg) {
-    freeReg = tryChooseBlockedRegister(*interval, *rc, allocSet);
+    freeReg = tryChooseBlockedRegister(*interval, useReg, allocSet);
   }
 
   // If until now, we found no free register, so try to enable flag 'allowsAntiDep'
@@ -737,11 +758,11 @@ unsigned RegisterRenaming::choosePhysRegForRenaming(MachineOperand *use,
     // Remove some registers are not available when making decision of choosing.
     filterUnavailableRegs(use, allocSet, true);
 
-    llvm::errs() << "Required: " << tri->getMinimalPhysRegClass(use->getReg())->getName() << "\n";
+    IDEM_DEBUG(llvm::errs() << "Required: " << tri->getMinimalPhysRegClass(use->getReg())->getName() << "\n";);
     // obtains a free register used for move instr.
-    freeReg = tryChooseFreeRegister(*interval, *rc, allocSet);
+    freeReg = tryChooseFreeRegister(*interval, useReg, allocSet);
     if (!freeReg) {
-      freeReg = tryChooseBlockedRegister(*interval, *rc, allocSet);
+      freeReg = tryChooseBlockedRegister(*interval, useReg, allocSet);
     }
   }
 
@@ -806,6 +827,7 @@ void RegisterRenaming::simplifyAntiDeps() {
   }
 }
 
+/*
 #if 0
 void RegisterRenaming::insertBoundaryAsNeed(MachineInstr *&useMI,
                                             unsigned defReg) {
@@ -854,16 +876,13 @@ void RegisterRenaming::clearAntiDeps(MachineOperand *useMO) {
     } else
       ++itr;
   }
-}
+}*/
 
 void RegisterRenaming::updatePrevDefUses() {
-  // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
-  regions->releaseMemory();
-  regions->runOnMachineFunction(*const_cast<MachineFunction *>(mf));
-
   // FIXME, We need to update LiveIntervalAnalysis result caused by inserting move and spill code
-  li->runOnMachineFunction(*const_cast<MachineFunction *>(mf));
+  reconstructIdemAndLiveInterval();
 
+  // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
   for (auto &mbb : sequence) {
     auto mi = mbb->instr_begin();
     auto mie = mbb->instr_end();
@@ -895,18 +914,16 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
   std::set<MachineBasicBlock *> visited;
   getCandidatePosForBoundaryInsert(useMI, candidateInsertPos, visited);
 
-  IDEM_DEBUG(
-      llvm::errs() << "\n    ************** Handles Anti-deps [" <<
-                   li->mi2Idx[pair.def->getParent()] << ", " <<
-                   li->mi2Idx[pair.use->getParent()] << ", " <<
-                   tri->getName(pair.use->getReg()) << "] **************\n";
+  IDEM_DEBUG(llvm::errs() << "\n    ************** Handles Anti-deps [" <<
+               li->mi2Idx[pair.def->getParent()] << ", " <<
+               li->mi2Idx[pair.use->getParent()] << ", " <<
+               tri->getName(pair.use->getReg()) << "] **************\n";
 
-      llvm::errs() << "candidate insertion positions:\n";
-      for (auto mi : candidateInsertPos) {
-        llvm::errs() << li->mi2Idx[mi] << ": ";
-        mi->dump();
-      }
-  );
+  llvm::errs() << "candidate insertion positions:\n";
+  for (auto mi : candidateInsertPos) {
+    llvm::errs() << li->mi2Idx[mi] << ": ";
+    mi->dump();
+  });
 
   // Computes the optimizing positions.
   std::vector<MachineInstr *> optInsertedPos;
@@ -950,7 +967,7 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
   // Step#8: substitute the old reg with phyReg,
   // and remove other anti-dep on this use.
   unsigned oldReg = pair.use->getReg();
-  clearAntiDeps(pair.use);
+  //clearAntiDeps(pair.use);
 
   pair.use->setReg(phyReg);
 
@@ -981,9 +998,8 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
 
   // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
   updatePrevDefUses();
-
-  IDEM_DEBUG(llvm::errs() << "After inserted move instruction:\n";
-                 mf->dump(););
+/*  IDEM_DEBUG(llvm::errs() << "After inserted move instruction:\n";
+                 mf->dump(););*/
 }
 
 void RegisterRenaming::getCandidateInsertionPositionsDFS(MachineInstr *startPos,
@@ -1196,7 +1212,7 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
       // Step#8: substitute the old reg with phyReg,
       // and remove other anti-dep on this use.
       unsigned oldReg = pair.use->getReg();
-      clearAntiDeps(pair.use);
+      //clearAntiDeps(pair.use);
       pair.use->setReg(phyReg);
 
       if (!pair.usesInSameMI.empty())
@@ -1379,16 +1395,16 @@ AntiDepPair* findForemostUse(std::vector<AntiDepPair> &list, LiveIntervalAnalysi
   }
   // All uses are in the same machine basic block.
   if (mbb) {
-    int minIndex = -1;
+    unsigned minIndex = UINT32_MAX;
     AntiDepPair *res = 0;
-    for (int i = 0, e = list.size(); i < e; i++) {
+    for (size_t i = 0, e = list.size(); i < e; i++) {
       auto idx = li->mi2Idx[list[i].use->getParent()];
-      if (minIndex < 0 || minIndex > idx) {
+      if (minIndex > idx) {
         minIndex = idx;
         res = &list[i];
       }
     }
-    assert(minIndex != -1 && res);
+    assert(minIndex != UINT32_MAX && res);
     return res;
   }
 
@@ -1420,8 +1436,8 @@ bool RegisterRenaming::handleSingleDefMultiUses() {
   bool changed = true;
   do {
     changed = false;
-    for (int i = 0; i < worklist.size(); i++) {
-      for (int j = i + 1; j < worklist.size(); j++)
+    for (size_t i = 0; i < worklist.size(); i++) {
+      for (size_t j = i + 1; j < worklist.size(); j++)
         if (isProfitableToMerge(worklist[i].front(), worklist[j].front())) {
           worklist[i].insert(worklist[i].end(), worklist[j].begin(), worklist[j].end());
           worklist[j] = worklist.back();
@@ -1441,12 +1457,12 @@ bool RegisterRenaming::handleSingleDefMultiUses() {
     if (temp.size() < 2)
       continue;
 
-    llvm::errs()<<"\n Merged multiples anti-deps:\n";
+    IDEM_DEBUG(llvm::errs()<<"\n Merged multiples anti-deps:\n";
     for (auto &pair : temp) {
       llvm::errs()<<"["<<li->mi2Idx[pair.def->getParent()] << ", " <<
                     li->mi2Idx[pair.use->getParent()] << ", " <<
                     tri->getName(pair.use->getReg()) << "]\n";
-    }
+    });
 
     if (AntiDepPair *insertPos = findForemostUse(temp, li)) {
       std::vector<MachineOperand*> uses;
@@ -1482,12 +1498,6 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
   // Step#1: Collects regions
   regions = getAnalysisIfAvailable<MachineIdempotentRegions>();
-
-  // If we are not going to clear the antiDeps, there is an item
-  // remained produced by previous running of this pass.
-  // I don't know why???
-  antiDeps.clear();
-
   dt = getAnalysisIfAvailable<MachineDominatorTree>();
   assert(dt);
 
@@ -1498,9 +1508,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   computeReversePostOrder(MF, *dt, sequence);
   bool changed = false;
 
-  antiDeps.clear();
-
+  //llvm::errs()<<"Deal with: "<<MF.getFunction()->getName()<<"\n";
   do {
+    reconstructIdemAndLiveInterval();
     // Step#2: visits register operand of each machine instr in the program sequence.
     for (auto &mbb : sequence) {
       auto mi = mbb->instr_begin();
@@ -1526,7 +1536,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
     // IDEM_DEBUG(llvm::errs()<<"\n**************** Round #"<<round<<" ***************\n"; dump(););
     IDEM_DEBUG(
-        llvm::errs() << "\n************* Anti-dependences *************\n";
+        llvm::errs() << "\n************* All Anti-dependences *************\n";
         for (auto pair : antiDeps) {
           unsigned defIdx = li->mi2Idx[pair.def->getParent()];
           llvm::errs() << "[" << defIdx << ',' << li->mi2Idx[pair.use->getParent()] <<
@@ -1565,5 +1575,11 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     changed |= localChanged;
   }while (true);
 
+  // If we are not going to clear the antiDeps, there is an item
+  // remained produced by previous running of this pass.
+  // I don't know why???
+  releaseMemory();
+
   return changed;
 }
+
