@@ -148,7 +148,8 @@ private:
 
   void insertMoveAndBoundary(AntiDepPair &pair, std::vector<MachineOperand*> *uses = 0);
 
-  void getCandidateInsertionPositionsDFS(MachineInstr *startPos,
+  void getCandidateInsertionPositionsDFS(MachineBasicBlock::iterator begin,
+                                         MachineBasicBlock::iterator end,
                                          std::set<MachineInstr *> &candidates,
                                          std::set<MachineBasicBlock *> &visited);
 
@@ -621,23 +622,42 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
   // appropriate.
   unsigned costMax = INT_MAX;
   LiveIntervalIdem *targetInter = nullptr;
+  //std::vector<LiveIntervalIdem> waitingAllocs;
+
   for (auto physReg = allocSet.find_first(); physReg > 0;
        physReg = allocSet.find_next(physReg)) {
     if (!legalToReplace(physReg, useReg))
       continue;
     assert(li->intervals.count(physReg) && "Why tryChooseFreeRegister does't return it?");
     auto phyItv = li->intervals[physReg];
-
     IDEM_DEBUG(llvm::errs()<<"Found: "<< tri->getMinimalPhysRegClass(physReg)<<"\n";);
-    // TargetRegisterClass isn't compatible with each other.
-    if (!legalToReplace(phyItv->reg, useReg))
-      continue;
 
     if (mri->isLiveIn(physReg))
       continue;
 
     assert(interval.intersects(phyItv) &&
         "should not have interval doesn't interfere with current interval");
+
+    for (auto begin = phyItv->usepoint_begin(),
+        end = phyItv->usepoint_end(); begin != end; ++begin) {
+      LiveIntervalIdem verifyLI;
+      verifyLI.addUsePoint(begin->id, begin->mo);
+      unsigned from, to;
+      if (begin->mo->isUse()) {
+        to = li->mi2Idx[begin->mo->getParent()];
+        from = to - 1;
+      }
+      else {
+        from = li->mi2Idx[begin->mo->getParent()];
+        to = from + 1;
+      }
+      verifyLI.addRange(from, to);
+      // The new splitted interval should not interfere with interval.
+      if (interval.intersects(&verifyLI))
+      {}// waitingAllocs.push_back(verifyLI);
+      else
+        verifyLI.reg = physReg;
+    }
 
     if (phyItv->costToSpill < costMax) {
       costMax = phyItv->costToSpill;
@@ -654,6 +674,7 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
                  llvm::errs() << "\nSelected evicted interval is: ";
                  targetInter->dump(*const_cast<TargetRegisterInfo *>(tri)););
 
+  // TODO 10/04/2018, try to allocate other physical register to splited intervals.
   spillOutInterval(targetInter);
   return targetInter->reg;
 }
@@ -661,12 +682,6 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
 void RegisterRenaming::filterUnavailableRegs(MachineOperand *use,
                                             BitVector &allocSet,
                                             bool allowsAntiDep) {
-
-  /*IDEM_DEBUG(for (int i = allocSet.find_first(); i > 0; i = allocSet.find_next(i)) {
-    llvm::errs()<<tri->getName(i)<<" ";
-  }
-  llvm::errs()<<"\n";);
-  */
   // remove the defined register by use mi from allocable set.
   std::set<MachineOperand *> defs;
   getDefUses(use->getParent(), &defs, 0, tri->getAllocatableSet(*mf));
@@ -703,32 +718,36 @@ void RegisterRenaming::filterUnavailableRegs(MachineOperand *use,
   // R2 = ...
   // So anti-dependence occurs again !!!
   if (!allowsAntiDep) {
-    std::vector<MachineInstr *> worklist;
-    worklist.push_back(use->getParent());
+    typedef MachineBasicBlock::iterator MIItr;
+    std::vector<std::pair<MIItr, MIItr>> worklist;
+    worklist.emplace_back(use->getParent(), use->getParent()->getParent()->end());
     std::set<MachineBasicBlock *> visited;
 
     while (!worklist.empty()) {
-      MachineInstr *startPos = worklist.back();
+      auto itrRange = worklist.back();
       worklist.pop_back();
 
+      if (itrRange.first == itrRange.second)
+        continue;
+
       // Also the assigned register can not is same as the defined reg by successive instr.
-      MachineBasicBlock::iterator itr(startPos);
-      auto mbb = itr->getParent();
+      auto mbb = itrRange.first->getParent();
       if (!visited.insert(mbb).second)
         continue;
 
-      for (++itr; itr != mbb->end() && !tii->isIdemBoundary(itr); ++itr) {
+      auto begin = itrRange.first, end = itrRange.second;
+      for (++begin; begin != end && !tii->isIdemBoundary(begin); ++begin) {
         std::set<MachineOperand *> defs;
-        getDefUses(itr, &defs, 0, allocSet);
+        getDefUses(begin, &defs, 0, allocSet);
         for (auto defMO : defs)
           allocSet[defMO->getReg()] = false;
       }
 
-      if (itr != mbb->end())
+      if (begin != end)
         return;
 
       std::for_each(mbb->succ_begin(), mbb->succ_end(), [&](MachineBasicBlock *succ) {
-        worklist.push_back(&succ->front());
+        worklist.emplace_back(succ->begin(), succ->end());
       });
     }
   }
@@ -1002,18 +1021,19 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
                  mf->dump(););*/
 }
 
-void RegisterRenaming::getCandidateInsertionPositionsDFS(MachineInstr *startPos,
+void RegisterRenaming::getCandidateInsertionPositionsDFS(MachineBasicBlock::iterator begin,
+                                                         MachineBasicBlock::iterator end,
                                                          std::set<MachineInstr *> &candidates,
                                                          std::set<MachineBasicBlock *> &visited) {
-  assert(startPos && startPos->getParent());
+  if (begin == end)
+    return;
 
-  MachineBasicBlock::iterator itr = startPos;
-  auto mbb = startPos->getParent();
+  MachineBasicBlock::iterator itr = begin;
+  auto mbb = begin->getParent();
 
   if (!visited.insert(mbb).second)
     return;
 
-  auto end = startPos->getParent()->end();
   for (; itr != end && !tii->isIdemBoundary(itr); ++itr) {
     std::set<MachineOperand *> defs;
     SmallVectorImpl<IdempotentRegion *> Regions(20);
@@ -1040,7 +1060,7 @@ void RegisterRenaming::getCandidateInsertionPositionsDFS(MachineInstr *startPos,
   // handle successor blocks.
   if (itr == end && std::distance(mbb->succ_begin(), mbb->succ_end()) > 0) {
     std::for_each(mbb->succ_begin(), mbb->succ_end(), [&](MachineBasicBlock *succ) {
-      return getCandidateInsertionPositionsDFS(succ->begin(), candidates, visited);
+      return getCandidateInsertionPositionsDFS(succ->begin(), succ->end(), candidates, visited);
     });
   }
 }
@@ -1050,8 +1070,10 @@ void RegisterRenaming::getCandidatePosForBoundaryInsert(MachineInstr *startPos,
                                                         std::set<MachineBasicBlock *> &visited) {
   assert(startPos && startPos->getParent());
   candidates.insert(startPos);
+  MachineBasicBlock::iterator begin = startPos;
+  MachineBasicBlock::iterator end = startPos->getParent()->end();
 
-  getCandidateInsertionPositionsDFS(startPos, candidates, visited);
+  getCandidateInsertionPositionsDFS(begin, end, candidates, visited);
 }
 
 void RegisterRenaming::computeDistance(ItrRange range,
@@ -1564,16 +1586,16 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
         changed = true;
       }
     }
-
-    // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-    bool localChanged;
-    do {
-      localChanged = scavengerIdem();
-      changed |= localChanged;
-    } while (localChanged);
-
-    changed |= localChanged;
   }while (true);
+
+  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+  bool localChanged;
+  do {
+    localChanged = scavengerIdem();
+    changed |= localChanged;
+  } while (localChanged);
+
+  changed |= localChanged;
 
   // If we are not going to clear the antiDeps, there is an item
   // remained produced by previous running of this pass.
