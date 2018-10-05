@@ -1,3 +1,5 @@
+#include <utility>
+
 //===----- IdemRegisterRenaming.cpp - Register regnaming after RA ---------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -18,6 +20,8 @@
 #include "LiveIntervalAnalysisIdem.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/Target/TargetData.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "IdemUtil.h"
 
 #include <algorithm>
@@ -25,6 +29,7 @@
 #include <deque>
 #include <utility>
 #include <algorithm>
+#include <queue>
 
 using namespace llvm;
 
@@ -47,7 +52,7 @@ struct AntiDepPair {
   }
 
   bool operator!=(AntiDepPair rhs) {
-    return !(*this == rhs);
+    return !(*this == std::move(rhs));
   }
 
   bool operator<(const AntiDepPair &rhs) {
@@ -134,11 +139,24 @@ private:
    */
   inline bool legalToReplace(unsigned physReg, int reg);
 
+  void revisitSpilledInterval(std::set<unsigned> &allocables, std::vector<LiveIntervalIdem*> &spilled);
+
+  void processHandledIntervals(std::vector<LiveIntervalIdem*> &handled, unsigned currentStart);
+
+  void assignRegOrStackSlotAtInterval(std::set<unsigned> &allocables,
+                                      LiveIntervalIdem *interval,
+                                      std::vector<LiveIntervalIdem*> &handled,
+                                      std::vector<LiveIntervalIdem*> &spilled);
+
+  void getAllocableRegs(unsigned useReg, std::set<unsigned> &allocables);
+
+  void getSpilledSubLiveInterval(LiveIntervalIdem *interval, std::vector<LiveIntervalIdem*> &spilledItrs);
+
   unsigned tryChooseBlockedRegister(LiveIntervalIdem &interval,
                                     int useReg,
                                     BitVector &allocSet);
 
-  void spillOutInterval(LiveIntervalIdem *interval);
+  void insertSpillingCodeForInterval(LiveIntervalIdem* spilledItr);
 
   void simplifyAntiDeps();
 
@@ -530,35 +548,85 @@ bool RegisterRenaming::shouldRename(AntiDepPair pair) {
   return !contain(defs, use, predEq);
 }
 
-void RegisterRenaming::spillOutInterval(LiveIntervalIdem *interval) {
-  int frameIndex = INT_MIN;
-  for (auto itr = interval->usepoint_begin(), end = interval->usepoint_end();
-       itr != end; ++itr) {
-    MachineOperand *mo = itr->mo;
-    MachineInstr *mi = mo->getParent();
-    assert(mo->isReg());
-    const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo->getReg());
-    if (mo->isDef()) {
-      frameIndex = mfi->CreateSpillStackObject(rc->getSize(), rc->getAlignment());
-      auto st = getNextMI(mi);
-      tii->storeRegToStackSlot(*mi->getParent(), st,
-                               mo->getReg(), false, frameIndex, rc, tri);
+// for a group of sub live interval caused by splitting the original live interval.
+// all of sub intervals in the same group have to be assigned a same frame index.
+static unsigned groupId = 1;
+static std::map<LiveIntervalIdem*, unsigned> intervalGrpId;
+static std::map<unsigned, int> grp2FrameIndex;
 
-      auto copyMI = getNextMI(mi);
-      for (int i = copyMI->getNumOperands()-1; i >= 0; --i)
-        if (copyMI->getOperand(i).isReg() && copyMI->getOperand(i).getReg() == mo->getReg()) {
-          copyMI->getOperand(i).setIsUndef(true);
-          break;
-        }
+static unsigned getOrGroupId(std::vector<LiveIntervalIdem*> itrs) {
+  if (itrs.empty())
+    return 0;
+  for (LiveIntervalIdem *itr : itrs) {
+    if (intervalGrpId.count(itr))
+      return intervalGrpId[itr];
 
-    } else if (mo->isUse()) {
-      assert(frameIndex != INT_MIN);
-      tii->loadRegFromStackSlot(*mi->getParent(), mi, mo->getReg(), frameIndex, rc, tri);
-      // Inserts a boundary instruction immediately before the load to partition the
-      // region into two different parts for avoiding violating idempotence.
-      auto ld = getPrevMI(mi);
-      tii->emitIdemBoundary(*mi->getParent(), ld);
-    }
+    intervalGrpId[itr] = groupId;
+  }
+  ++groupId;
+  return groupId-1;
+}
+
+static unsigned getOrGroupId(LiveIntervalIdem* itr) {
+  assert(itr);
+  assert (intervalGrpId.count(itr));
+  return intervalGrpId[itr];
+}
+
+static bool hasFrameSlot(LiveIntervalIdem *itr) {
+  return grp2FrameIndex.count(getOrGroupId(itr));
+}
+
+static void setFrameIndex(LiveIntervalIdem *itr, int frameIndex) {
+  unsigned grpId = getOrGroupId(itr);
+  grp2FrameIndex[grpId] = frameIndex;
+}
+
+static int getFrameIndex(LiveIntervalIdem *itr) {
+  assert(hasFrameSlot(itr));
+  return grp2FrameIndex[getOrGroupId(itr)];
+}
+
+void RegisterRenaming::insertSpillingCodeForInterval(LiveIntervalIdem* spilledItr) {
+  int frameIndex;
+
+  auto interval = spilledItr;
+  MachineOperand *mo = interval->usepoint_begin()->mo;
+  MachineInstr *mi = mo->getParent();
+  assert(mo->isReg());
+  unsigned usedReg = interval->reg;
+  mo->setReg(usedReg);
+
+  const TargetRegisterClass *rc = tri->getMinimalPhysRegClass(mo->getReg());
+  if (hasFrameSlot(spilledItr))
+    frameIndex = getFrameIndex(spilledItr);
+  else {
+    frameIndex = mfi->CreateSpillStackObject(rc->getSize(), rc->getAlignment());
+    setFrameIndex(spilledItr, frameIndex);
+  }
+
+  if (mo->isDef()) {
+
+    auto st = getNextMI(mi);
+    tii->storeRegToStackSlot(*mi->getParent(), st,
+                             usedReg, false, frameIndex, rc, tri);
+
+    auto copyMI = getNextMI(mi);
+    for (int i = copyMI->getNumOperands() - 1; i >= 0; --i)
+      if (copyMI->getOperand(i).isReg() && copyMI->getOperand(i).getReg() == mo->getReg()) {
+        copyMI->getOperand(i).setIsUndef(true);
+        break;
+      }
+    // insert a boundary after store instr.
+    tii->emitIdemBoundary(*mi->getParent(), getNextMI(copyMI));
+
+  } else if (mo->isUse()) {
+    assert(frameIndex != INT_MIN);
+    tii->loadRegFromStackSlot(*mi->getParent(), mi, usedReg, frameIndex, rc, tri);
+    // Inserts a boundary instruction immediately before the load to partition the
+    // region into two different parts for avoiding violating idempotence.
+    auto ld = getPrevMI(mi);
+    tii->emitIdemBoundary(*mi->getParent(), ld);
   }
 }
 
@@ -615,6 +683,29 @@ unsigned RegisterRenaming::tryChooseFreeRegister(LiveIntervalIdem &interval,
   return 0;
 }
 
+void RegisterRenaming::getSpilledSubLiveInterval(LiveIntervalIdem *interval,
+                                                std::vector<LiveIntervalIdem*> &spilledItrs) {
+
+  for (auto begin = interval->usepoint_begin(),
+           end = interval->usepoint_end(); begin != end; ++begin) {
+    LiveIntervalIdem *verifyLI = new LiveIntervalIdem;
+    verifyLI->addUsePoint(begin->id, begin->mo);
+    unsigned from, to;
+    if (begin->mo->isUse()) {
+      to = li->mi2Idx[begin->mo->getParent()];
+      from = to - 1;
+    }
+    else {
+      from = li->mi2Idx[begin->mo->getParent()];
+      to = from + 1;
+    }
+    verifyLI->addRange(from, to);
+    verifyLI->reg = 0;
+    // tells compiler not to evict this spilling interval.
+    verifyLI->costToSpill = UINT32_MAX;
+  }
+}
+
 unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
                                                     int useReg,
                                                     BitVector &allocSet) {
@@ -622,7 +713,7 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
   // appropriate.
   unsigned costMax = INT_MAX;
   LiveIntervalIdem *targetInter = nullptr;
-  //std::vector<LiveIntervalIdem> waitingAllocs;
+  std::vector<LiveIntervalIdem*> spilledIntervs;
 
   for (auto physReg = allocSet.find_first(); physReg > 0;
        physReg = allocSet.find_next(physReg)) {
@@ -637,28 +728,6 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
 
     assert(interval.intersects(phyItv) &&
         "should not have interval doesn't interfere with current interval");
-
-    for (auto begin = phyItv->usepoint_begin(),
-        end = phyItv->usepoint_end(); begin != end; ++begin) {
-      LiveIntervalIdem verifyLI;
-      verifyLI.addUsePoint(begin->id, begin->mo);
-      unsigned from, to;
-      if (begin->mo->isUse()) {
-        to = li->mi2Idx[begin->mo->getParent()];
-        from = to - 1;
-      }
-      else {
-        from = li->mi2Idx[begin->mo->getParent()];
-        to = from + 1;
-      }
-      verifyLI.addRange(from, to);
-      // The new splitted interval should not interfere with interval.
-      if (interval.intersects(&verifyLI))
-      {}// waitingAllocs.push_back(verifyLI);
-      else
-        verifyLI.reg = physReg;
-    }
-
     if (phyItv->costToSpill < costMax) {
       costMax = phyItv->costToSpill;
       targetInter = phyItv;
@@ -674,9 +743,110 @@ unsigned RegisterRenaming::tryChooseBlockedRegister(LiveIntervalIdem &interval,
                  llvm::errs() << "\nSelected evicted interval is: ";
                  targetInter->dump(*const_cast<TargetRegisterInfo *>(tri)););
 
-  // TODO 10/04/2018, try to allocate other physical register to splited intervals.
-  spillOutInterval(targetInter);
+  getSpilledSubLiveInterval(targetInter, spilledIntervs);
+
+  // TODO 10/04/2018, try to allocate other physical register to splitted intervals.
+  if (!spilledIntervs.empty()) {
+    std::set<unsigned> allocables;
+    getAllocableRegs(targetInter->reg, allocables);
+    revisitSpilledInterval(allocables, spilledIntervs);
+  }
+
+  for (auto itr : spilledIntervs)
+    delete itr;
   return targetInter->reg;
+}
+
+typedef std::priority_queue<LiveIntervalIdem*, SmallVector<LiveIntervalIdem*, 64>,
+                            llvm::greater_ptr<LiveIntervalIdem>> IntervalMap;
+
+SmallVector<unsigned, 32> regUse;
+
+void RegisterRenaming::processHandledIntervals(std::vector<LiveIntervalIdem*> &handled,
+                                                unsigned currentStart) {
+  for (auto interval : handled) {
+    if (interval->endNumber() < currentStart) {
+      regUse[interval->reg] = 0;
+      for (const unsigned *as = tri->getAliasSet(interval->reg); as && *as; ++as)
+        regUse[*as] = 0;
+    }
+  }
+}
+
+void RegisterRenaming::getAllocableRegs(unsigned useReg, std::set<unsigned> &allocables) {
+  for (unsigned i = 0, e = tri->getNumRegClasses(); i < e; i++) {
+    auto rc = tri->getRegClass(i);
+    if (rc->contains(useReg))
+      for (auto reg : rc->getRawAllocationOrder(*mf))
+        allocables.insert(reg);
+  }
+}
+
+void RegisterRenaming::assignRegOrStackSlotAtInterval(std::set<unsigned> &allocables,
+                                                      LiveIntervalIdem *interval,
+                                                      std::vector<LiveIntervalIdem*> &handled,
+                                                      std::vector<LiveIntervalIdem*> &spilled) {
+  unsigned freeReg = 0;
+  for (unsigned reg : allocables) {
+    if (!regUse[reg]) {
+      freeReg = reg;
+      break;
+    }
+  }
+  if (freeReg == 0) {
+    // select a handled interval to be spilled out into memory.
+    LiveIntervalIdem *spilledItr = 0;
+    for (LiveIntervalIdem *itr : handled) {
+      if (!spilledItr || itr->costToSpill < spilledItr->costToSpill)
+        spilledItr = itr;
+    }
+    assert(spilledItr && "Must have one interval to be spilled choosen!");
+    freeReg = spilledItr->reg;
+
+    getSpilledSubLiveInterval(spilledItr, spilled);
+  }
+
+  assert(freeReg != 0 && "No free register found!");
+  regUse[freeReg] = 1;
+  interval->reg = freeReg;
+  insertSpillingCodeForInterval(interval);
+}
+
+void RegisterRenaming::revisitSpilledInterval(std::set<unsigned> &allocables,
+                                              std::vector<LiveIntervalIdem*> &spilled) {
+  li->releaseMemory();
+  li->runOnMachineFunction(*const_cast<MachineFunction*>(mf));
+
+  IntervalMap unhandled;
+  std::vector<LiveIntervalIdem*> handled;
+  regUse.resize(tri->getNumRegs(), 0);
+
+  for (auto begin = li->interval_begin(), end = li->interval_end(); begin != end; ++begin) {
+    handled.push_back(begin->second);
+    regUse[begin->second->reg] = 1;
+  }
+
+  for (auto begin = spilled.begin(), end = spilled.end(); begin != end; ++begin) {
+    unhandled.push(*begin);
+  }
+  getOrGroupId(spilled);
+
+  while (!unhandled.empty()) {
+    auto cur = unhandled.top();
+    unhandled.pop();
+    cur->dump(*const_cast<TargetRegisterInfo*>(tri));
+    if (!cur->empty()) {
+      processHandledIntervals(handled, cur->beginNumber());
+    }
+
+    // Allocating another register for current live interval.
+    // Note that, only register is allowed to assigned to current interval.
+    // Because the current interval corresponds to spilling code.
+    std::vector<LiveIntervalIdem*> localSpilled;
+    assignRegOrStackSlotAtInterval(allocables, cur, handled, localSpilled);
+    getOrGroupId(localSpilled);
+    handled.push_back(cur);
+  }
 }
 
 void RegisterRenaming::filterUnavailableRegs(MachineOperand *use,

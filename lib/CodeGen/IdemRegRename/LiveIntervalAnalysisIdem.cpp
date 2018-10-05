@@ -77,7 +77,7 @@ void LiveIntervalIdem::print(llvm::raw_ostream &OS, const TargetRegisterInfo &tr
       OS << ",";
     ++i;
   }
-  OS << "]";
+  OS << "]\n";
 }
 
 bool LiveIntervalIdem::isLiveAt(unsigned pos) {

@@ -117,7 +117,9 @@ public:
   bool isExpiredAt(unsigned pos) { return getLast()->end <= pos; }
   bool isLiveAt(unsigned pos);
   unsigned beginNumber() { return first->start; }
+  unsigned beginNumber() const { return first->start; }
   unsigned endNumber() { return last->end; }
+  unsigned endNumber() const { return last->end; }
 
   RangeIterator intersectAt(LiveIntervalIdem *li);
   bool intersects(LiveIntervalIdem *cur);
@@ -125,6 +127,12 @@ public:
   typedef std::set<UsePoint>::iterator iterator;
   iterator usepoint_begin() { return usePoints.begin(); }
   iterator usepoint_end() { return usePoints.end(); }
+
+  bool operator <(const LiveIntervalIdem &rhs) const {
+    return beginNumber() < rhs.beginNumber();
+  }
+
+  bool empty() { return begin() == end(); }
 
 private:
   /**
