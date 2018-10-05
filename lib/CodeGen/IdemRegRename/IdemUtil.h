@@ -15,8 +15,9 @@ extern bool DebugIdemFlag;
 #define IDEM_DEBUG(X)                           \
   do { if (::llvm::DebugIdemFlag) { X; } } while (0)
 
+#else
+#define IDEM_DEBUG(X) 
 #endif
-
 void computeReversePostOrder(MachineFunction &MF,
                              MachineDominatorTree &dt,
                              std::vector<MachineBasicBlock *> &sequence);

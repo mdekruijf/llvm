@@ -91,6 +91,7 @@ public:
     antiDeps.clear();
     regions->releaseMemory();
     sequence.clear();
+    allocaSet.clear();
     //delete scavenger;
   }
 private:
@@ -244,7 +245,7 @@ private:
   /**
    * Used for cleaning some redundant idem call instruction after register renaming.
    */
-  IdemInstrScavenger *scavenger;
+  //IdemInstrScavenger *scavenger;
   MachineDominatorTree *dt;
   std::vector<MachineBasicBlock *> sequence;
 };
@@ -1770,7 +1771,6 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   // If we are not going to clear the antiDeps, there is an item
   // remained produced by previous running of this pass.
   // I don't know why???
-  releaseMemory();
 
   return changed;
 }
