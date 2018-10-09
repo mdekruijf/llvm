@@ -419,7 +419,7 @@ class MachineIdempotentRegions : public MachineFunctionPass {
   // boundary then the function will return the set of regions that precede MI's
   // region.
   void getRegionsContaining(const MachineInstr &MI,
-                            SmallVectorImpl<IdempotentRegion *> *Regions);
+                            std::vector<IdempotentRegion *> *Regions);
 
   // Return whether LI is live across one or more region boundaries.
   bool isLiveAcrossRegions(const LiveInterval &LI,

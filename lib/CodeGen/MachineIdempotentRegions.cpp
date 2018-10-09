@@ -125,34 +125,35 @@ IdempotentRegion &MachineIdempotentRegions::createRegionBefore(
 
 void MachineIdempotentRegions::getRegionsContaining(
   const MachineInstr &MI,
-  SmallVectorImpl<IdempotentRegion *> *Regions) {
+  std::vector<IdempotentRegion *> *Regions) {
 
   // Clear the return argument.
-  Regions->clear();
+  //Regions->clear();
 
   // Walk the CFG backwards, starting at the instruction before MI.
   typedef std::pair<MachineBasicBlock::const_reverse_iterator,
-                    const MachineBasicBlock *> WorkItemTy;
-  SmallVector<WorkItemTy, 16> Worklist;
-  Worklist.push_back(
-      WorkItemTy(
-          MachineBasicBlock::const_reverse_iterator(
-              MachineBasicBlock::const_iterator(&MI)),
-          MI.getParent()));
+                    MachineBasicBlock::const_reverse_iterator> WorkItemTy;
+  std::vector<WorkItemTy> Worklist;
+  Worklist.push_back(std::make_pair(MachineBasicBlock::const_reverse_iterator(&MI),
+      MI.getParent()->rend()));
 
-  SmallPtrSet<const MachineBasicBlock *, 32> Visited;
+  std::set<const MachineBasicBlock *> Visited;
   do {
-    MachineBasicBlock::const_reverse_iterator It;
-    const MachineBasicBlock *MBB;
-    tie(It, MBB) = Worklist.pop_back_val();
+    MachineBasicBlock::const_reverse_iterator It, end;
+    tie(It, end) = Worklist.back();
+    Worklist.pop_back();
+    if (It == end)
+      continue;
+
+    const MachineBasicBlock *MBB = It->getParent();
 
     // Look for a region entry or the block entry, whichever comes first. 
-    while (It != MBB->rend() && !isRegionEntry(*It))
+    while (It != end && !isRegionEntry(*It))
       It++;
 
     // If we found a region entry, add the region and skip predecessors.
-    if (It != MBB->rend()) {
-      Regions->push_back(&getRegionAtEntry(*It));
+    if (It != end) {
+      Regions->push_back(nullptr/*&getRegionAtEntry(*It)*/);
       continue;
     }
 
@@ -160,8 +161,8 @@ void MachineIdempotentRegions::getRegionsContaining(
     // to MI's block.
     for (MachineBasicBlock::const_pred_iterator P = MBB->pred_begin(),
          PE = MBB->pred_end(); P != PE; ++P)
-      if (Visited.insert(*P))
-        Worklist.push_back(WorkItemTy((*P)->rbegin(), *P));
+      if (Visited.insert(*P).second)
+        Worklist.emplace_back((*P)->rbegin(), (*P)->rend());
 
   } while (!Worklist.empty());
 }

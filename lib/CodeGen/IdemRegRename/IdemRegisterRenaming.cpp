@@ -108,16 +108,16 @@ private:
 
   bool regionContains(IdempotentRegion *region, MachineInstr *mi);
 
-  bool regionContains(SmallVectorImpl<IdempotentRegion *> *Regions, MachineInstr *mi);
+  bool regionContains(std::vector<IdempotentRegion *> *Regions, MachineInstr *mi);
 
   template<bool IgnoreIdem = false>
   void computeDefUseDataflow(MachineInstr *mi,
                              std::set<MachineOperand *> &uses,
-                             SmallVectorImpl<IdempotentRegion *> *Regions,
+                             std::vector<IdempotentRegion *> *Regions,
                              std::map<MachineInstr *, std::set<MachineOperand *>> &prevDefs,
                              std::map<MachineInstr *, std::set<MachineOperand *>> &prevUses);
   inline void addAntiDeps(MachineOperand *useMO, MachineOperand *defMO);
-  void collectRefDefUseInfo(MachineInstr *mi, SmallVectorImpl<IdempotentRegion *> *Regions);
+  void collectRefDefUseInfo(MachineInstr *mi, std::vector<IdempotentRegion *> *Regions);
   /**
    * Checks if the MachineInstr is two address instruction or not. Return true if it is.
    * @param useMI
@@ -396,7 +396,7 @@ bool RegisterRenaming::regionContains(IdempotentRegion *region,
   return false;
 }
 
-bool RegisterRenaming::regionContains(SmallVectorImpl<IdempotentRegion *> *Regions,
+bool RegisterRenaming::regionContains(std::vector<IdempotentRegion *> *Regions,
                                       MachineInstr *mi) {
   for (IdempotentRegion *r : *Regions) {
     if (regionContains(r, mi))
@@ -416,7 +416,7 @@ bool RegisterRenaming::regionContains(SmallVectorImpl<IdempotentRegion *> *Regio
 template<bool IgnoreIdem>
 void RegisterRenaming::computeDefUseDataflow(MachineInstr *mi,
                                              std::set<MachineOperand *> &uses,
-                                             SmallVectorImpl<IdempotentRegion *> *Regions,
+                                             std::vector<IdempotentRegion *> *Regions,
                                              std::map<MachineInstr *, std::set<MachineOperand *>> &prevDefs,
                                              std::map<MachineInstr *, std::set<MachineOperand *>> &prevUses) {
   if (regions->isRegionEntry(*mi) && !IgnoreIdem) {
@@ -485,7 +485,7 @@ inline void RegisterRenaming::addAntiDeps(MachineOperand *useMO, MachineOperand 
 }
 
 void RegisterRenaming::collectRefDefUseInfo(MachineInstr *mi,
-                                            SmallVectorImpl<IdempotentRegion *> *Regions) {
+                                            std::vector<IdempotentRegion *> *Regions) {
   if (!mi)
     return;
   std::set<MachineOperand *> uses;
@@ -1079,7 +1079,7 @@ void RegisterRenaming::updatePrevDefUses() {
     for (; mi != mie; ++mi) {
       // Step#3: collects reg definition information.
       // Step#4: collects reg uses information.
-      SmallVectorImpl<IdempotentRegion *> Regions(10);
+      std::vector<IdempotentRegion *> Regions(10);
       regions->getRegionsContaining(*mi, &Regions);
 
       std::set<MachineOperand *> uses;
@@ -1207,7 +1207,7 @@ void RegisterRenaming::getCandidateInsertionPositionsDFS(MachineBasicBlock::iter
 
   for (; itr != end && !tii->isIdemBoundary(itr); ++itr) {
     std::set<MachineOperand *> defs;
-    SmallVectorImpl<IdempotentRegion *> Regions(20);
+    std::vector<IdempotentRegion *> Regions(20);
     regions->getRegionsContaining(*itr, &Regions);
 
     getDefUses(itr, &defs, 0, allocaSet);
@@ -1463,7 +1463,7 @@ bool RegisterRenaming::idemCanBeRemoved(MachineInstr *mi) {
     std::set<MachineOperand *> uses;
     getDefUses(itr, &defs, &uses, allocaSet);
 
-    SmallVectorImpl<IdempotentRegion *> Regions(10);
+    std::vector<IdempotentRegion *> Regions(20);
     regions->getRegionsContaining(*itr, &Regions);
     computeDefUseDataflow<true>(itr, uses, &Regions, localPrevDefs, localPrevUses);
 
@@ -1701,9 +1701,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   computeReversePostOrder(MF, *dt, sequence);
   bool changed = false;
 
+
   //llvm::errs()<<"Deal with: "<<MF.getFunction()->getName()<<"\n";
   do {
-    reconstructIdemAndLiveInterval();
     // Step#2: visits register operand of each machine instr in the program sequence.
     for (auto &mbb : sequence) {
       auto mi = mbb->instr_begin();
@@ -1713,7 +1713,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
         // Step#3: collects reg definition information.
         // Step#4: collects reg uses information.
-        SmallVectorImpl<IdempotentRegion *> Regions(10);
+        std::vector<IdempotentRegion *> Regions(20);
         regions->getRegionsContaining(*mi, &Regions);
         collectRefDefUseInfo(mi, &Regions);
       }
@@ -1757,6 +1757,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
         changed = true;
       }
     }
+    reconstructIdemAndLiveInterval();
   }while (true);
 
   // FIXME, cleanup is needed for transforming some incorrect code into normal status.
