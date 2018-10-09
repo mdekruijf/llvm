@@ -116,6 +116,7 @@ add_llvm_library(LLVMCodeGen
   IdemRegRename/IdemRegisterRenaming.cpp
   IdemRegRename/LiveIntervalAnalysisIdem.cpp
   IdemRegRename/IdemUtil.cpp
+  IdemRegRename/EliminateIdemBoundary.cpp
   )
 
 add_subdirectory(SelectionDAG)

@@ -64,6 +64,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   // Added by Jianping Zeng on 8/29/2018
   initializeLiveIntervalAnalysisIdemPass(Registry);
   initializeRegisterRenamingPass(Registry);
+  initializeEliminateIdemBoundaryPass(Registry);
 }
 
 void LLVMInitializeCodeGen(LLVMPassRegistryRef R) {

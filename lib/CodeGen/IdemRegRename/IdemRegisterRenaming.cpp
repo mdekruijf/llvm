@@ -1,5 +1,3 @@
-#include <utility>
-
 //===----- IdemRegisterRenaming.cpp - Register regnaming after RA ---------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -30,6 +28,7 @@
 #include <utility>
 #include <algorithm>
 #include <queue>
+#include <utility>
 
 using namespace llvm;
 

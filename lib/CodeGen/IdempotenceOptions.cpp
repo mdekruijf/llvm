@@ -58,5 +58,10 @@ cl::opt<bool> RenamingIdemVerify(
     cl::desc("Verify idempotence preservation after register renaming"),
     cl::init(false));
 
+cl::opt<bool> EliminateIdemBoundary(
+    "eliminate-idem-boundary", cl::Hidden,
+    cl::desc("Eliminate all idem boundaries for performance evaluation"),
+    cl::init(false));
+
 } // namespace llvm
 

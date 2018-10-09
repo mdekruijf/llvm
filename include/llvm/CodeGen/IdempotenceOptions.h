@@ -66,6 +66,10 @@ namespace llvm {
 
   extern cl::opt<bool> RenamingIdemVerify;
 
+  /// Flags to tell compiler to eliminate all idempotence splitting
+  /// instruction for performance evaluation.
+  extern cl::opt<bool> EliminateIdemBoundary;
+
 } // namespace llvm
 
 #endif // LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H
