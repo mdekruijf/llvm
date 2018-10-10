@@ -68,7 +68,14 @@ namespace llvm {
 
   /// Flags to tell compiler to eliminate all idempotence splitting
   /// instruction for performance evaluation.
+  /// @author Jianping Zeng.
   extern cl::opt<bool> EliminateIdemBoundary;
+
+  /// Flag to tell compiler print out some statistic data for
+  /// idempotence, including the static number of regions, the average
+  /// number of instructions of region.
+  /// @author Jianping Zeng.
+  extern cl::opt<bool> EnableIdemStatistic;
 
 } // namespace llvm
 

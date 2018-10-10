@@ -65,6 +65,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeLiveIntervalAnalysisIdemPass(Registry);
   initializeRegisterRenamingPass(Registry);
   initializeEliminateIdemBoundaryPass(Registry);
+  initializeIdemStatisticPass(Registry);
 }
 
 void LLVMInitializeCodeGen(LLVMPassRegistryRef R) {

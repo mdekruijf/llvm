@@ -334,14 +334,6 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
       EnableRegisterRenaming)
     PM.add(createConstructIdempotentRegionsPass());
 
-
-  // Eliminate all idem boundary instrs.
-  // Jianping Zeng on 10/9/2018
-  if ((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
-      EnableRegisterRenaming) && llvm::EliminateIdemBoundary) {
-    PM.add(createEliminateIdemBoundaryPass());
-  }
-
   // Run loop strength reduction before anything else.
   if (getOptLevel() != CodeGenOpt::None && !DisableLSR) {
     PM.add(createLoopStrengthReducePass(getTargetLowering()));
@@ -481,6 +473,20 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   if (EnableRegisterRenaming) {
     PM.add(llvm::createRegisterRenamingPass());
     printAndVerifyRegRenaming(PM, "After Register Renaming for idem");
+  }
+
+  if ((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && llvm::EnableIdemStatistic) {
+    PM.add(createIdemStatisticPass());
+    printAndVerifyRegRenaming(PM, EnableRegisterRenaming?
+    "After Register Renaming for Idem pass" : "After Wisc's Idempotence Pass");
+  }
+
+  // Eliminate all idem boundary instrs.
+  // Jianping Zeng on 10/9/2018
+  if ((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && llvm::EliminateIdemBoundary) {
+    PM.add(createEliminateIdemBoundaryPass());
   }
 
   // Perform stack slot coloring and post-ra machine LICM.

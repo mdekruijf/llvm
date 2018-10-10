@@ -63,5 +63,9 @@ cl::opt<bool> EliminateIdemBoundary(
     cl::desc("Eliminate all idem boundaries for performance evaluation"),
     cl::init(false));
 
+cl::opt<bool> EnableIdemStatistic("enable-idem-statistic", cl::Hidden,
+    cl::desc("Report the statistic data for idempotence regions, such as number of regions, average length"),
+    cl::init(false));
+
 } // namespace llvm
 

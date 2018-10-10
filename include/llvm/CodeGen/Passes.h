@@ -275,6 +275,9 @@ namespace llvm {
   /// createEliminateIdemBoundary
   FunctionPass *createEliminateIdemBoundaryPass();
 
+  /// createIdemStatisticPass
+  FunctionPass *createIdemStatisticPass();
+
 } // End llvm namespace
 
 #endif
