@@ -108,6 +108,7 @@ class IdempotentRegion {
     // Return whether the iterator is valid.  False implies the end condition
     // has been met.
     bool isValid() { return Valid_; }
+    bool isValid() const { return Valid_; }
 
     // Return whether this MBB range contains an exit instruction or if MBB
     // exits the function (and hence exits the region at its end).
@@ -216,6 +217,9 @@ class IdempotentRegion {
 
     // Comparison.
     bool operator==(const dfs_inst_iterator &X) const {
+      if (!MBBIterator_.isValid() && !X.MBBIterator_.isValid())
+        return true;
+
       return MBBIterator_ == X.MBBIterator_ && this->It_ == X.It_;
     }
 

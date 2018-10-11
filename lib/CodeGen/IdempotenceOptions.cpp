@@ -67,5 +67,11 @@ cl::opt<bool> EnableIdemStatistic("enable-idem-statistic", cl::Hidden,
     cl::desc("Report the statistic data for idempotence regions, such as number of regions, average length"),
     cl::init(false));
 
+cl::opt<std::string> IdemStatisticOutFile("idem-stat-outfile",
+    cl::Hidden,
+    cl::value_desc("idem-stat-outfile"),
+    cl::desc("path to output file for idem statistic, default by /tmp/idem_stat1x32/idemStat.txt"),
+    cl::init("/tmp/idem_stat1x32/idemStat.txt"));
+
 } // namespace llvm
 

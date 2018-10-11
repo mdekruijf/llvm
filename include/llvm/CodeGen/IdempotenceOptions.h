@@ -77,6 +77,8 @@ namespace llvm {
   /// @author Jianping Zeng.
   extern cl::opt<bool> EnableIdemStatistic;
 
+  extern cl::opt<std::string> IdemStatisticOutFile;
+
 } // namespace llvm
 
 #endif // LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H
