@@ -13,6 +13,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/PassSupport.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/Module.h"
 #include <cstring>
 #include <libgen.h>
 #include <sys/stat.h>
@@ -61,8 +62,12 @@ bool IdemStatistic::runOnMachineFunction(MachineFunction &MF) {
   // I don't want to solve it at all as yet!!!!
   // Jianping Zeng.
   MIR->runOnMachineFunction(MF);
-  auto mfName = MF.getFunction()->getName();
+  auto module = MF.getFunction()->getParent();
+  const std::string& moduleName = module? module->getModuleIdentifier() : "null";
   long num = MIR->size();
+
+  if (num <= 0)
+    return false;
 
   char* path = const_cast<char*>(llvm::IdemStatisticOutFile.c_str());
   llvm::sys::Path p(path);
@@ -81,29 +86,29 @@ bool IdemStatistic::runOnMachineFunction(MachineFunction &MF) {
     exit(-1);
   }
 
-  os<<"\n********** Idem Static statistic data for function '"<<mfName<<"'' **********\n";
-  os<<"The number of regions are: "<<num<<"\n";
-
-  if (num > 0) {
-    // records the number of instrs within each region.
-    long *regionSizes = new long[num]{0};
-
-    int i = 0;
-    for (auto &itr : *MIR) {
-      regionSizes[i++] = std::distance(itr->inst_begin(), itr->inst_end());
-    }
-    assert(i == num && "Number of regions does't matches!");
-
-    long totalSize = 0;
-    for (i = 0; i < num; i++) {
-      totalSize += regionSizes[i];
-      os << "The number of instrs within region #" << i << " are: " << regionSizes[i] << "\n";
-    }
-    long averageSize = totalSize/num;
-    os<<"The average size of regions is: "<<averageSize<<"\n";
-    os<<"\n";
+  if (llvm::moduleName != moduleName) {
+    llvm::moduleName = moduleName;
+    os<<"file "<<moduleName<<", ";
   }
-  os.close();
 
+  os<<"function "<<MF.getFunction()->getName()<<"\n";
+  os<<num;
+
+  // records the number of instrs within each region.
+  long *regionSizes = new long[num]{0};
+
+  int i = 0;
+  for (auto &itr : *MIR) {
+    regionSizes[i++] = std::distance(itr->inst_begin(), itr->inst_end());
+  }
+  assert(i == num && "Number of regions does't matches!");
+
+  for (i = 0; i < num; i++) {
+    os <<",";
+    os<< regionSizes[i];
+  }
+  os<<"\n";
+
+  os.close();
   return false;
 }

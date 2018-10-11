@@ -73,5 +73,7 @@ cl::opt<std::string> IdemStatisticOutFile("idem-stat-outfile",
     cl::desc("path to output file for idem statistic, default by /tmp/idem_stat1x32/idemStat.txt"),
     cl::init("/tmp/idem_stat1x32/idemStat.txt"));
 
+std::string moduleName;
+
 } // namespace llvm
 

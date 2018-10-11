@@ -79,6 +79,8 @@ namespace llvm {
 
   extern cl::opt<std::string> IdemStatisticOutFile;
 
+  extern std::string moduleName;
+
 } // namespace llvm
 
 #endif // LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H
