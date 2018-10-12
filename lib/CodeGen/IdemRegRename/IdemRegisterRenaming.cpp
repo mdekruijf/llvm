@@ -1756,21 +1756,18 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
         changed = true;
       }
     }
+
+    // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+    bool localChanged;
+    do {
+      localChanged = scavengerIdem();
+      changed |= localChanged;
+    } while (localChanged);
+
+    changed |= localChanged;
+
     reconstructIdemAndLiveInterval();
   }while (true);
-
-  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-  bool localChanged;
-  do {
-    localChanged = scavengerIdem();
-    changed |= localChanged;
-  } while (localChanged);
-
-  changed |= localChanged;
-
-  // If we are not going to clear the antiDeps, there is an item
-  // remained produced by previous running of this pass.
-  // I don't know why???
 
   return changed;
 }

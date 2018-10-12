@@ -59,7 +59,7 @@ bool EliminateIdemBoundary::runOnMachineFunction(MachineFunction &MF) {
 
   for (; mbbItr != mbbEnd; ++mbbItr) {
     MachineBasicBlock *mbb = mbbItr;
-    if (!mbb || !mbb->empty())
+    if (!mbb || mbb->empty())
       continue;
 
     for (auto mi = mbb->instr_begin(), end = mbb->instr_end(); mi != end; ++mi) {
@@ -75,6 +75,23 @@ bool EliminateIdemBoundary::runOnMachineFunction(MachineFunction &MF) {
     for (auto mi : toDelete)
       mi->eraseFromParent();
   }
+
+#ifndef NDEBUG
+  {
+    auto mbbItr = MF.begin(), mbbEnd = MF.end();
+    // We don't cope with empty function.
+    if (mbbItr == mbbEnd) return false;
+
+    for (; mbbItr != mbbEnd; ++mbbItr) {
+      MachineBasicBlock *mbb = mbbItr;
+      if (!mbb || mbb->empty())
+        continue;
+
+      for (auto mi = mbb->instr_begin(), end = mbb->instr_end(); mi != end; ++mi)
+        assert(!tii->isIdemBoundary(mi) && "Failed to eliminate idem boundary?");
+    }
+  }
+#endif
 
   return changed;
 }
