@@ -1096,8 +1096,8 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
   //insertBoundaryAsNeed(useMI, phyReg);
   MachineBasicBlock *mbb = 0;
 
-  // Find the candiate insertion positions.
-  std::set<MachineInstr *> candidateInsertPos;
+  // Find the candidate insertion positions.
+/*  std::set<MachineInstr *> candidateInsertPos;
   std::set<MachineBasicBlock *> visited;
   getCandidatePosForBoundaryInsert(useMI, candidateInsertPos, visited);
 
@@ -1115,13 +1115,13 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
   // Computes the optimizing positions.
   std::vector<MachineInstr *> optInsertedPos;
   computeOptimizedInsertion(useMI, candidateInsertPos, optInsertedPos);
-  assert(optInsertedPos.size() == 1 && "should have only one optimal inserted position");
+  assert(optInsertedPos.size() == 1 && "should have only one optimal inserted position");*/
 
   // insert a boundary right after the use MI for avoiding validating the idem region
   // after use MI.
 
   // Inserts a poir of boundary and move instrs at each insertion point.
-  auto pos = optInsertedPos[0];
+  auto pos = useMI;
   IDEM_DEBUG(llvm::errs() << "Inserted position:\n";
                  llvm::errs() << li->mi2Idx[pos] << ": ";
                  pos->dump(););
@@ -1771,22 +1771,20 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-
-    bool localChanged;
-    do {
-      localChanged = scavengerIdem();
-      changed |= localChanged;
-    } while (localChanged);
-
-    changed |= localChanged;
-
     prevDefRegs.clear();
     prevUseRegs.clear();
     antiDeps.clear();
     reconstructIdemAndLiveInterval();
   }while (true);
 
+  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+ /* bool localChanged;
+  do {
+    localChanged = scavengerIdem();
+    changed |= localChanged;
+  } while (localChanged);
+
+  changed |= localChanged;*/
   return changed;
 }
 
