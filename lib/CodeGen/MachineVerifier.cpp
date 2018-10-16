@@ -292,7 +292,7 @@ bool MachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
   // Only verify idempotent regions after PatchMachineIdempotentRegions has
   // run.  It runs immediately before we leave SSA.
-  if (!MIR && MRI->isPatched() && IdempotenceVerify) {
+  if (!MIR && MRI->isPatched() && (IdempotenceVerify || RenamingIdemVerify)) {
     MIR = new MachineIdempotentRegions();
     MIR->runOnMachineFunction(MF);
   }
@@ -1350,8 +1350,9 @@ void MachineVerifier::verifyIdempotentRegions() {
     !EnableRegisterRenaming)
     return;
 
+  auto savedIdemPreservationMode = IdempotencePreservationMode;
   if (EnableRegisterRenaming)
-    IdempotencePreservationMode = IdempotenceOptions::VariableCF;
+    IdempotencePreservationMode = IdempotenceOptions::InvariableCF;
 
   for (MachineIdempotentRegions::const_iterator R = MIR->begin(),
        RE = MIR->end(); R != RE; ++R) {
@@ -1456,5 +1457,7 @@ void MachineVerifier::verifyIdempotentRegions() {
       }
     }
   }
+  // restore the saved mode.
+  IdempotencePreservationMode = savedIdemPreservationMode;
 }
 

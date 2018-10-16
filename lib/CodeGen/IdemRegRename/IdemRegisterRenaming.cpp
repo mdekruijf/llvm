@@ -89,7 +89,7 @@ public:
     prevUseRegs.clear();
     antiDeps.clear();
     regions->releaseMemory();
-    sequence.clear();
+    reversePostOrderBBs.clear();
     allocaSet.clear();
     //delete scavenger;
   }
@@ -202,7 +202,7 @@ private:
                    ", " << tri->getName(def->getReg()) << "]\n";
     }
 
-    li->dump(sequence);
+    li->dump(reversePostOrderBBs);
   }
 
   /**
@@ -246,7 +246,7 @@ private:
    */
   //IdemInstrScavenger *scavenger;
   MachineDominatorTree *dt;
-  std::vector<MachineBasicBlock *> sequence;
+  std::vector<MachineBasicBlock *> reversePostOrderBBs;
 };
 }
 
@@ -1072,7 +1072,7 @@ void RegisterRenaming::updatePrevDefUses() {
   reconstructIdemAndLiveInterval();
 
   // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
-  for (auto &mbb : sequence) {
+  for (auto &mbb : reversePostOrderBBs) {
     auto mi = mbb->instr_begin();
     auto mie = mbb->instr_end();
     for (; mi != mie; ++mi) {
@@ -1697,26 +1697,46 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   // The only thing we need to modify is inserting boundary instr as
   // appropriate.
 
-  computeReversePostOrder(MF, *dt, sequence);
+  computeReversePostOrder(MF, *dt, reversePostOrderBBs);
   bool changed = false;
 
 
   //llvm::errs()<<"Deal with: "<<MF.getFunction()->getName()<<"\n";
   do {
     // Step#2: visits register operand of each machine instr in the program sequence.
-    for (auto &mbb : sequence) {
+    for (auto &mbb : reversePostOrderBBs) {
       auto mi = mbb->instr_begin();
       auto mie = mbb->instr_end();
       for (; mi != mie; ++mi) {
         assert(li->mi2Idx.count(mi));
 
+        mi->dump();
         // Step#3: collects reg definition information.
         // Step#4: collects reg uses information.
-        std::vector<IdempotentRegion *> Regions(20);
+        std::vector<IdempotentRegion *> Regions;
         regions->getRegionsContaining(*mi, &Regions);
         collectRefDefUseInfo(mi, &Regions);
       }
     }
+
+    IDEM_DEBUG(for (auto &mbb : reversePostOrderBBs) {
+      auto mi = mbb->instr_begin();
+      auto mie = mbb->instr_end();
+      for (; mi != mie; ++mi) {
+        assert(li->mi2Idx.count(mi));
+        mi->dump();
+        llvm::errs()<<"PrevDefs: [";
+        for (auto &reg : prevDefRegs[mi]) {
+          llvm::errs()<<tri->getName(reg->getReg())<<",";
+        }
+        llvm::errs()<<"] ";
+        llvm::errs()<<"PrevUses:[";
+        for (auto &reg : prevUseRegs[mi]) {
+          llvm::errs()<<tri->getName(reg->getReg())<<",";
+        }
+        llvm::errs()<<"]\n";
+      }
+    });
 
     // If there is not antiDeps exist, just early break from do loop.
     if (antiDeps.empty())
@@ -1758,6 +1778,7 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
     }
 
     // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+
     bool localChanged;
     do {
       localChanged = scavengerIdem();
@@ -1766,6 +1787,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
 
     changed |= localChanged;
 
+    prevDefRegs.clear();
+    prevUseRegs.clear();
+    antiDeps.clear();
     reconstructIdemAndLiveInterval();
   }while (true);
 
