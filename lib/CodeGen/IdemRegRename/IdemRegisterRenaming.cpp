@@ -1696,12 +1696,9 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   // We must ensure that we will not change the CFG of this Function.
   // The only thing we need to modify is inserting boundary instr as
   // appropriate.
-
   computeReversePostOrder(MF, *dt, reversePostOrderBBs);
   bool changed = false;
 
-
-  //llvm::errs()<<"Deal with: "<<MF.getFunction()->getName()<<"\n";
   do {
     // Step#2: visits register operand of each machine instr in the program sequence.
     for (auto &mbb : reversePostOrderBBs) {
@@ -1710,7 +1707,6 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       for (; mi != mie; ++mi) {
         assert(li->mi2Idx.count(mi));
 
-        mi->dump();
         // Step#3: collects reg definition information.
         // Step#4: collects reg uses information.
         std::vector<IdempotentRegion *> Regions;

@@ -151,6 +151,7 @@ void MachineIdempotentRegions::getRegionsContaining(
     MBB = item.mbb;
     Worklist.pop_back();
     assert(MBB);
+    Visited.insert(MBB);
 
     if (It != begin) {
       // Look for a region entry or the block entry, whichever comes first.
