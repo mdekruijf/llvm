@@ -1,4 +1,4 @@
-//===----- IdemRegisterRenaming.cpp - Register regnaming after RA ---------===//
+//===----- IdemRegisterRenaming.cpp - Register renaming after RA ---------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -1171,17 +1171,17 @@ void RegisterRenaming::insertMoveAndBoundary(AntiDepPair &pair,
 
   // Step#10: insert a move instruction before splitting boundary instr.
   // This instruction would be the last killer of src reg in this copy instr.
-  tii->copyPhysReg(*mbb, pos, DebugLoc(), phyReg, oldReg, false);
+  tii->copyPhysReg(*mbb, pos, DebugLoc(), phyReg, oldReg, pair.use->isKill());
 
   // annotate the undef flag to the src reg if src reg is liveIn.
-  auto copyMI = getPrevMI(pos);
+/*  auto copyMI = getPrevMI(pos);
 
   // attach the undef flag to all src regs.
   for (unsigned i = 1, e = copyMI->getNumOperands(); i < e; ++i) {
     auto &mo = copyMI->getOperand(i);
     if (mo.isReg() && mo.getReg())
       mo.setIsUndef(true);
-  }
+  }*/
 
   // FIXME, 9/17/2018, we need update prevDef, prevUses reg set, and idempotence regions.
   updatePrevDefUses();
@@ -1412,17 +1412,17 @@ bool RegisterRenaming::handleMultiDepsWithinSameMI(AntiDepPair &pair) {
       assert(tii->isIdemBoundary(boundary) && "the mi at inserted position must be a splitting boundary!");
       // Step#10: insert a move instruction before splitting boundary instr.
       // This instruction would be the last killer of src reg in this copy instr.
-      tii->copyPhysReg(*mbb, boundary, DebugLoc(), phyReg, oldReg, true);
+      tii->copyPhysReg(*mbb, boundary, DebugLoc(), phyReg, oldReg, pair.use->isKill());
 
       // annotate the undef flag to the src reg if src reg is liveIn.
-      auto copyMI = getPrevMI(boundary);
+ /*     auto copyMI = getPrevMI(boundary);
 
       // attach the undef flag to all src regs.
       for (unsigned i = 1, e = copyMI->getNumOperands(); i < e; ++i) {
         auto &mo = copyMI->getOperand(i);
         if (mo.isReg() && mo.getReg())
           mo.setIsUndef(true);
-      }
+      }*/
       // Update prev defs and uses dataflow.
       updatePrevDefUses();
     }
@@ -1544,7 +1544,6 @@ bool RegisterRenaming::scavengerIdem() {
         removable.push_back(mi);
       }
     }
-
     changed |= clearUselessIdem(removable);*/
   }
   return changed;
@@ -1770,20 +1769,36 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // FIXME, cleanup is needed for transforming some incorrect code into normal status.
+    bool localChanged;
+    do {
+      localChanged = scavengerIdem();
+      changed |= localChanged;
+    } while (localChanged);
+
+    changed |= localChanged;
+
     prevDefRegs.clear();
     prevUseRegs.clear();
     antiDeps.clear();
     reconstructIdemAndLiveInterval();
   }while (true);
 
-  // FIXME, cleanup is needed for transforming some incorrect code into normal status.
-  bool localChanged;
-  do {
-    localChanged = scavengerIdem();
-    changed |= localChanged;
-  } while (localChanged);
+  for (auto &mbb : reversePostOrderBBs) {
+    auto mi = mbb->instr_begin();
+    auto mie = mbb->instr_end();
+    for (; mi != mie; ++mi) {
+      assert(li->mi2Idx.count(mi));
 
-  changed |= localChanged;
+      // Step#3: collects reg definition information.
+      // Step#4: collects reg uses information.
+      std::vector<IdempotentRegion *> Regions;
+      regions->getRegionsContaining(*mi, &Regions);
+      collectRefDefUseInfo(mi, &Regions);
+    }
+  }
+
+  assert(antiDeps.empty() && "There are anti-dependences remained after idem renaming!");
   return changed;
 }
 

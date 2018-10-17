@@ -886,10 +886,11 @@ void MachineVerifier::visitMachineInstrAfter(const MachineInstr *MI) {
 
   if (Indexes && Indexes->hasIndex(MI)) {
     SlotIndex idx = Indexes->getInstructionIndex(MI);
-    if (!(idx > lastIndex)) {
+ /* FIXME, firstly, we comment it! Jianping Zeng on 10/17/2018
+  * if (!(idx > lastIndex)) {
       report("Instruction index out of order", MI);
       *OS << "Last instruction was at " << lastIndex << '\n';
-    }
+    }*/
     lastIndex = idx;
   }
 }
@@ -1309,7 +1310,7 @@ static void dumpLiveIns(const IdempotentRegion &Region,
                         const SlotIndexes *Indexes,
                         const TargetRegisterInfo *TRI) {
   dbgs() << "Verifying region ";
-  Region.print(dbgs(), Indexes);
+  Region.print(dbgs(), 0);
   dbgs() << " with live-ins: [";
   for (DenseSet<unsigned>::const_iterator I = LiveIns.begin(),
        IE = LiveIns.end(), First = I; I != IE; ++I) {
@@ -1347,12 +1348,12 @@ void MachineVerifier::verifyIdempotentRegions() {
   if (IdempotencePreservationMode == IdempotenceOptions::NoPreservation &&
      // Jianping Zeng
      // perform verification on Machine Function when register renaming is enabled
-    !EnableRegisterRenaming)
+    EnableRegisterRenaming)
     return;
 
   auto savedIdemPreservationMode = IdempotencePreservationMode;
   if (EnableRegisterRenaming)
-    IdempotencePreservationMode = IdempotenceOptions::InvariableCF;
+    IdempotencePreservationMode = IdempotenceOptions::VariableCF;
 
   for (MachineIdempotentRegions::const_iterator R = MIR->begin(),
        RE = MIR->end(); R != RE; ++R) {
@@ -1373,7 +1374,7 @@ void MachineVerifier::verifyIdempotentRegions() {
     }
     // Add live-through registers.
     set_union(LiveIns, MInfo.vregsRequired);
-    DEBUG(dumpLiveIns(*Region, LiveIns, Indexes, TRI));
+    dumpLiveIns(*Region, LiveIns, Indexes, TRI);
 
     // The case with variable control is trivial; the registers that must not
     // be clobbered are simply the registers live at the region's entry point.
