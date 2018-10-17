@@ -1533,8 +1533,7 @@ bool RegisterRenaming::scavengerIdem() {
       itr = next;
     }
     changed |= clearUselessIdem(removable);
-
-    itr = mbb.begin();
+/*   itr = mbb.begin();
     for (; itr != mbb.end(); ++itr) {
       auto mi = const_cast<MachineInstr *>(&*itr);
       if (!tii->isIdemBoundary(mi))
@@ -1546,7 +1545,7 @@ bool RegisterRenaming::scavengerIdem() {
       }
     }
 
-    changed |= clearUselessIdem(removable);
+    changed |= clearUselessIdem(removable);*/
   }
   return changed;
 }
@@ -1778,13 +1777,13 @@ bool RegisterRenaming::runOnMachineFunction(MachineFunction &MF) {
   }while (true);
 
   // FIXME, cleanup is needed for transforming some incorrect code into normal status.
- /* bool localChanged;
+  bool localChanged;
   do {
     localChanged = scavengerIdem();
     changed |= localChanged;
   } while (localChanged);
 
-  changed |= localChanged;*/
+  changed |= localChanged;
   return changed;
 }
 
