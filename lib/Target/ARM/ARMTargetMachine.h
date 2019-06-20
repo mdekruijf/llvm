@@ -55,6 +55,7 @@ public:
   virtual bool addPreISel(PassManagerBase &PM);
   virtual bool addInstSelector(PassManagerBase &PM);
   virtual bool addPreRegAlloc(PassManagerBase &PM);
+
   virtual bool addPreSched2(PassManagerBase &PM);
   virtual bool addPreEmitPass(PassManagerBase &PM);
   virtual bool addCodeEmitter(PassManagerBase &PM, JITCodeEmitter &MCE);

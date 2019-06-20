@@ -215,8 +215,8 @@ void PatchMachineIdempotentRegions::releaseMemory() {
 
 bool PatchMachineIdempotentRegions::runOnMachineFunction(MachineFunction &MF) {
   DEBUG(dbgs() << "********** PATCH MACHINE IDEMPOTENT REGIONS **********\n");
-  assert(IdempotenceConstructionMode != IdempotenceOptions::NoConstruction &&
-         "pass should not be run");
+  assert((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && "pass should not be run");
 
   MF_  = &MF;
   MDT_ = &getAnalysis<MachineDominatorTree>();
@@ -283,7 +283,7 @@ void PatchMachineIdempotentRegions::patchCallingConvention() {
             << *I);
 
       // Ignore tail calls.
-      MachineBasicBlock::iterator Next = next(I);
+      MachineBasicBlock::iterator Next = llvm::next(I);
       if (Next == IE)
         continue;
 

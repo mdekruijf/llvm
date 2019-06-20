@@ -206,7 +206,7 @@ bool DivideMachineIdempotentRegions::runOnMachineFunction(MachineFunction &MF) {
     // SSAUpdater) to help us out.  We just do pessimistic stuff.
     // FIXME:  Cut placement may be mostly redundant with neighboring cut.
     // Peephole optimizations possible.
-    SmallVector<IdempotentRegion *, 4> Regions;
+    std::vector<IdempotentRegion *> Regions;
     MIR_->getRegionsContaining(NewRegion->getEntry(), &Regions);
     if (std::find(Regions.begin(), Regions.end(), NewRegion) != Regions.end())
       patchCycle(NewRegion, &Recompute);

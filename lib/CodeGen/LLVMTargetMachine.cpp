@@ -294,12 +294,26 @@ void LLVMTargetMachine::printAndVerifyIdem(PassManagerBase &PM,
     PM.add(createMachineVerifierPass(Banner));
 }
 
+void LLVMTargetMachine::printAndVerifyRegRenaming(PassManagerBase &PM,
+                                                  const char *Banner) const {
+  if (Options.PrintMachineCode)
+    PM.add(createMachineFunctionPrinterPass(dbgs(), Banner));
+
+  if (RenamingIdemVerify)
+    PM.add(createMachineVerifierPass(Banner));
+}
+
 /// addCommonCodeGenPasses - Add standard LLVM codegen passes used for both
 /// emitting to assembly files or machine code output.
 ///
 bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
                                                bool DisableVerify,
                                                MCContext *&OutContext) {
+  // Set the RegisterRenaming on Optimization level >= 1
+  // Commented by Jianping Zeng on 9/11/2018
+  //if (getOptLevel() != CodeGenOpt::None)
+  //  EnableRegisterRenaming = true;
+
   // Standard LLVM-Level Passes.
 
   // Basic AliasAnalysis support.
@@ -316,7 +330,8 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
 
   // Run idempotent region construction before loop strength reduction or
   // alias analysis becomes unreliable.
-  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction)
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming)
     PM.add(createConstructIdempotentRegionsPass());
 
   // Run loop strength reduction before anything else.
@@ -443,7 +458,8 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
     printAndVerify(PM, "After PreRegAlloc passes");
 
   // Patch idempotent regions before register allocation.
-  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction) {
+  if (IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) {
     PM.add(createPatchMachineIdempotentRegionsPass());
     printAndVerifyIdem(PM, "After patching idempotent regions");
   }
@@ -451,6 +467,27 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   // Perform register allocation.
   PM.add(createRegisterAllocator(getOptLevel()));
   printAndVerifyIdem(PM, "After Register Allocation");
+
+  // Enable register renaming as a Post-RA pass.
+  // Commented by Jianping Zeng on 9/5/2018.
+  if (EnableRegisterRenaming) {
+    PM.add(llvm::createRegisterRenamingPass());
+    printAndVerifyRegRenaming(PM, "After Register Renaming for idem");
+  }
+
+  if ((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && llvm::EnableIdemStatistic) {
+    PM.add(createIdemStatisticPass());
+    printAndVerifyRegRenaming(PM, EnableRegisterRenaming?
+    "After Register Renaming for Idem pass" : "After Wisc's Idempotence Pass");
+  }
+
+  // Eliminate all idem boundary instrs.
+  // Jianping Zeng on 10/9/2018
+  if ((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && llvm::EliminateIdemBoundary) {
+    PM.add(createEliminateIdemBoundaryPass());
+  }
 
   // Perform stack slot coloring and post-ra machine LICM.
   if (getOptLevel() != CodeGenOpt::None) {

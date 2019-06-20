@@ -79,8 +79,8 @@ void MachineIdempotentRegions::releaseMemory() {
 }
 
 bool MachineIdempotentRegions::runOnMachineFunction(MachineFunction &MF) {
-  assert(IdempotenceConstructionMode != IdempotenceOptions::NoConstruction &&
-         "pass should not be run");
+  assert((IdempotenceConstructionMode != IdempotenceOptions::NoConstruction ||
+      EnableRegisterRenaming) && "pass should not be run");
 
   MF_  = &MF;
   TII_ = MF.getTarget().getInstrInfo();
@@ -125,43 +125,58 @@ IdempotentRegion &MachineIdempotentRegions::createRegionBefore(
 
 void MachineIdempotentRegions::getRegionsContaining(
   const MachineInstr &MI,
-  SmallVectorImpl<IdempotentRegion *> *Regions) {
+  std::vector<IdempotentRegion *> *Regions) {
 
   // Clear the return argument.
   Regions->clear();
 
   // Walk the CFG backwards, starting at the instruction before MI.
-  typedef std::pair<MachineBasicBlock::const_reverse_iterator,
-                    const MachineBasicBlock *> WorkItemTy;
-  SmallVector<WorkItemTy, 16> Worklist;
-  Worklist.push_back(
-      WorkItemTy(
-          MachineBasicBlock::const_reverse_iterator(
-              MachineBasicBlock::const_iterator(&MI)),
-          MI.getParent()));
+  typedef MachineBasicBlock::const_iterator InstrItr;
+  typedef std::pair<InstrItr, InstrItr> WorkItemTy;
+  struct StackEntry {
+    InstrItr begin, end;
+    const MachineBasicBlock *mbb;
+  };
 
-  SmallPtrSet<const MachineBasicBlock *, 32> Visited;
+  std::vector<StackEntry> Worklist;
+  Worklist.push_back({MI.getParent()->begin(), ++InstrItr(&MI), MI.getParent()});
+
+  std::set<const MachineBasicBlock *> Visited;
   do {
-    MachineBasicBlock::const_reverse_iterator It;
+    InstrItr It, begin;
     const MachineBasicBlock *MBB;
-    tie(It, MBB) = Worklist.pop_back_val();
+    auto &item = Worklist.back();
+    It = item.end;
+    begin = item.begin;
+    MBB = item.mbb;
+    Worklist.pop_back();
+    assert(MBB);
+    Visited.insert(MBB);
 
-    // Look for a region entry or the block entry, whichever comes first. 
-    while (It != MBB->rend() && !isRegionEntry(*It))
-      It++;
+    if (It != begin) {
+      // Look for a region entry or the block entry, whichever comes first.
+      bool findIdem = false;
+      while (It != begin) {
+        if (isRegionEntry(*(--It))) {
+          findIdem = true;
+          break;
+        }
+      }
 
-    // If we found a region entry, add the region and skip predecessors.
-    if (It != MBB->rend()) {
-      Regions->push_back(&getRegionAtEntry(*It));
-      continue;
+      // If we found a region entry, add the region and skip predecessors.
+      if (findIdem) {
+        Regions->push_back(&getRegionAtEntry(*It));
+        continue;
+      }
     }
 
     // Examine predecessors.  Insert into Visited here to allow for a cycle back
     // to MI's block.
-    for (MachineBasicBlock::const_pred_iterator P = MBB->pred_begin(),
-         PE = MBB->pred_end(); P != PE; ++P)
-      if (Visited.insert(*P))
-        Worklist.push_back(WorkItemTy((*P)->rbegin(), *P));
+    for (auto P = MBB->pred_begin(), PE = MBB->pred_end(); P != PE; ++P)
+      if (Visited.insert(*P).second) {
+        auto pred = const_cast<const MachineBasicBlock*>(*P);
+        Worklist.push_back({pred->begin(), pred->end(), pred});
+      }
 
   } while (!Worklist.empty());
 }
@@ -238,8 +253,8 @@ bool MachineIdempotentRegions::verifyOperand(
   bool Verified = !LiveIns.count(Reg);
   if (!Verified) {
     errs() << PrintReg(Reg, TRI_) << " CLOBBER in:";
-    if (Indexes)
-      errs() << "\t" << Indexes->getInstructionIndex(MO.getParent());
+/*    if (Indexes)
+      errs() << "\t" << Indexes->getInstructionIndex(MO.getParent());*/
     errs() << "\t\t" << *MO.getParent();
   }
   return Verified;

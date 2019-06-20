@@ -270,7 +270,6 @@ public:
   typedef typename SuperClass::iterator iterator;
   typedef typename SuperClass::size_type size_type;
 
-protected:
   // Default ctor - Initialize to empty.
   explicit SmallVectorImpl(unsigned N)
     : SmallVectorTemplateBase<T, isPodLike<T>::value>(N*sizeof(T)) {

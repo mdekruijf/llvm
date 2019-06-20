@@ -60,6 +60,27 @@ namespace llvm {
   extern cl::opt<IdempotenceOptions::PreservationMode>
     IdempotencePreservationMode;
 
+  /// Flags tell compiler if should enable register renaming or not.
+  /// @author Jianping Zeng.
+  extern cl::opt<bool> EnableRegisterRenaming;
+
+  extern cl::opt<bool> RenamingIdemVerify;
+
+  /// Flags to tell compiler to eliminate all idempotence splitting
+  /// instruction for performance evaluation.
+  /// @author Jianping Zeng.
+  extern cl::opt<bool> EliminateIdemBoundary;
+
+  /// Flag to tell compiler print out some statistic data for
+  /// idempotence, including the static number of regions, the average
+  /// number of instructions of region.
+  /// @author Jianping Zeng.
+  extern cl::opt<bool> EnableIdemStatistic;
+
+  extern cl::opt<std::string> IdemStatisticOutFile;
+
+  extern std::string moduleName;
+
 } // namespace llvm
 
 #endif // LLVM_CODEGEN_IDEMPOTENCEOPTIONS_H

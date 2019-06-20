@@ -31,6 +31,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/CodeGen/IdempotenceOptions.h"
+
 using namespace llvm;
 
 /// setUsed - Set the register and its sub-registers as being used.
@@ -197,7 +199,9 @@ void RegScavenger::forward() {
             SubUsed = true;
             break;
           }
-        if (!SubUsed) {
+        if (!SubUsed && !llvm::EnableRegisterRenaming) {
+          MO.getParent()->dump();
+          llvm::errs()<<TRI->getName(Reg)<<"\n";
           MBB->getParent()->verify(NULL, "In Register Scavenger");
           llvm_unreachable("Using an undefined register!");
         }

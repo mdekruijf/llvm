@@ -102,6 +102,22 @@ add_llvm_library(LLVMCodeGen
   TwoAddressInstructionPass.cpp
   UnreachableBlockElim.cpp
   VirtRegMap.cpp
+
+  DivideMachineIdempotentRegions.cpp
+  IdempotenceUtils.cpp
+  IdempotenceShadowIntervals.cpp
+  MemoryIdempotenceAnalysis.cpp
+  IdempotenceOptions.cpp
+  MachineIdempotentRegions.cpp
+  ConstructIdempotentRegions.cpp
+  PatchMachineIdempotentRegions.cpp
+
+  # Our implementation for idempotence
+  IdemRegRename/IdemRegisterRenaming.cpp
+  IdemRegRename/LiveIntervalAnalysisIdem.cpp
+  IdemRegRename/IdemUtil.cpp
+  IdemRegRename/EliminateIdemBoundary.cpp
+  IdemRegRename/IdemStatistic.cpp
   )
 
 add_subdirectory(SelectionDAG)

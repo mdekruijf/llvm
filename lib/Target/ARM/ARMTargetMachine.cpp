@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <llvm/CodeGen/IdempotenceOptions.h>
 #include "ARMTargetMachine.h"
 #include "ARMFrameLowering.h"
 #include "ARM.h"

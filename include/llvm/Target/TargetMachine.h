@@ -295,6 +295,9 @@ protected: // Can only create subclasses.
   /// printAndVerifyIdem - Include idempotence verification.
   void printAndVerifyIdem(PassManagerBase &PM, const char *Banner) const;
 
+  /// printAndVerifyRegRenaming - Include idempotence verification.
+  void printAndVerifyRegRenaming(PassManagerBase &PM, const char *Banner) const;
+
 private:
   /// addCommonCodeGenPasses - Add standard LLVM codegen passes used for
   /// both emitting to assembly files or machine code output.

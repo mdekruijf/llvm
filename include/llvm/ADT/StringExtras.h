@@ -150,6 +150,22 @@ static inline unsigned HashString(StringRef Str, unsigned Result = 0) {
   return Result;
 }
 
+static inline std::string LowercaseString(const std::string &S) {
+  std::string result(S);
+  for (unsigned i = 0; i < S.length(); ++i)
+    if (isupper(result[i]))
+      result[i] = char(tolower(result[i]));
+  return result;
+}
+
+static inline std::string UppercaseString(const std::string &S) {
+  std::string result(S);
+  for (unsigned i = 0; i < S.length(); ++i)
+    if (islower(result[i]))
+      result[i] = char(toupper(result[i]));
+  return result;
+}
+
 } // End llvm namespace
 
 #endif

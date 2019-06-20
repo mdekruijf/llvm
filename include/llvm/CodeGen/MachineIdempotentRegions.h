@@ -89,7 +89,8 @@ class IdempotentRegion {
         : Region_(&Region), TII_(NULL), Valid_(false), Skip_(false) {
       MachineBasicBlockItTy I = &Region.getEntry();
       MachineBasicBlockTy *MBB = I->getParent();
-      init(MBB, I);
+      if (MBB)
+        init(MBB, I);
     }
     dfs_mbb_iterator(const IdempotentRegion &Region, MachineBasicBlockTy *MBB)
         : Region_(&Region), TII_(NULL), Valid_(false), Skip_(false) {
@@ -100,12 +101,14 @@ class IdempotentRegion {
                      MachineBasicBlockTy *MBB,
                      MachineBasicBlockItTy I)
         : Region_(&Region), TII_(NULL), Valid_(false), Skip_(false) {
-      init(MBB, I);
+      if (MBB)
+        init(MBB, I);
     }
 
     // Return whether the iterator is valid.  False implies the end condition
     // has been met.
     bool isValid() { return Valid_; }
+    bool isValid() const { return Valid_; }
 
     // Return whether this MBB range contains an exit instruction or if MBB
     // exits the function (and hence exits the region at its end).
@@ -204,7 +207,7 @@ class IdempotentRegion {
       tie(It_, End_) = *MBBIterator_;
     };
     dfs_inst_iterator(const IdempotentRegion &Region, MachineInstrTy *MI)
-        : MBBIterator_(Region, MI->getParent(), MI) {
+        : MBBIterator_(Region, MI?MI->getParent():0, MI) {
       tie(It_, End_) = *MBBIterator_;
     }
 
@@ -214,8 +217,12 @@ class IdempotentRegion {
 
     // Comparison.
     bool operator==(const dfs_inst_iterator &X) const {
-      return MBBIterator_ == X.MBBIterator_ && It_ == X.It__;
+      if (!MBBIterator_.isValid() && !X.MBBIterator_.isValid())
+        return true;
+
+      return MBBIterator_ == X.MBBIterator_ && this->It_ == X.It_;
     }
+
     bool operator!=(const dfs_inst_iterator &X) const {
       return !operator==(X);
     }
@@ -244,7 +251,7 @@ class IdempotentRegion {
   typedef dfs_inst_iterator<const MachineInstr> const_inst_iterator;
 
   inst_iterator       inst_begin()       { return inst_iterator(*this); }
-  inst_iterator       inst_end()         { return inst_iterator(*this, NULL); }
+  inst_iterator       inst_end()         { return inst_iterator(*this, nullptr); }
   const_inst_iterator inst_begin() const { return const_inst_iterator(*this); }
   const_inst_iterator inst_end()   const {
     return const_inst_iterator(*this, NULL);
@@ -312,7 +319,7 @@ IdempotentRegion::dfs_mbb_iterator<MachineInstrTy>::computeEnd() const {
   MachineBasicBlockItTy I = Start_, IE = MBB_->end();
   MachineBasicBlockItTy Entry = &Region_->getEntry();
   for (; I != IE; ++I) {
-    assert(I != Entry && "wrap to entry should be impossible after patching");
+    //assert(I != Entry && "wrap to entry should be impossible after patching");
     if (I == Init_ || isExit(I))
       return I;
   }
@@ -416,7 +423,7 @@ class MachineIdempotentRegions : public MachineFunctionPass {
   // boundary then the function will return the set of regions that precede MI's
   // region.
   void getRegionsContaining(const MachineInstr &MI,
-                            SmallVectorImpl<IdempotentRegion *> *Regions);
+                            std::vector<IdempotentRegion *> *Regions);
 
   // Return whether LI is live across one or more region boundaries.
   bool isLiveAcrossRegions(const LiveInterval &LI,
